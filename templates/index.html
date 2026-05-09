@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDFEdit — PDF Editor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+</head>
+<body>
+    <div id="app">
+        <!-- Top Bar -->
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <div class="brand">
+                    <svg class="brand-icon" width="28" height="28" viewBox="0 0 36 36" fill="none" aria-hidden="true">
+                        <rect x="1.5" y="1.5" width="33" height="33" rx="8" fill="var(--color-surface)" stroke="var(--color-primary)" stroke-width="1.5"/>
+                        <path d="M11 8.5H19L24 13.5V26.5C24 27.3284 23.3284 28 22.5 28H11C10.1716 28 9.5 27.3284 9.5 26.5V10C9.5 9.17157 10.1716 8.5 11 8.5Z" fill="var(--color-surface-2)" stroke="var(--color-primary)" stroke-width="1.5" stroke-linejoin="round"/>
+                        <path d="M19 8.5V13.5H24" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M14 22.6L21.8 14.8C22.3862 14.2138 23.3369 14.2138 23.9231 14.8C24.5093 15.3862 24.5093 16.3369 23.9231 16.9231L16.1 24.7L12.8 25.4L13.5 22.1Z" fill="var(--color-surface)" stroke="var(--color-primary)" stroke-width="1.5" stroke-linejoin="round"/>
+                        <path d="M19.9 16.7L22 18.8" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                    <span class="brand-text">PDFEdit</span>
+                </div>
+                <div class="top-bar-actions">
+                    <button id="btn-upload" class="top-btn" title="Upload PDF">
+                        <i data-lucide="upload" class="btn-icon"></i>
+                        <span>Upload</span>
+                    </button>
+                    <button id="btn-new" class="top-btn" title="New blank PDF">
+                        <i data-lucide="file-plus" class="btn-icon"></i>
+                        <span>New</span>
+                    </button>
+                    <span class="top-bar-sep"></span>
+                    <button id="btn-save" class="top-btn top-btn-accent" title="Save (Ctrl+S)" disabled>
+                        <i data-lucide="save" class="btn-icon"></i>
+                        <span>Save</span>
+                    </button>
+                    <button id="btn-download" class="top-btn top-btn-accent" title="Download PDF" disabled>
+                        <i data-lucide="download" class="btn-icon"></i>
+                        <span>Download</span>
+                    </button>
+                    <span class="top-bar-sep"></span>
+                    <button id="btn-undo" class="top-btn icon-only" title="Undo (Ctrl+Z)" disabled>
+                        <i data-lucide="undo-2" class="btn-icon"></i>
+                    </button>
+                    <button id="btn-redo" class="top-btn icon-only" title="Redo (Ctrl+Y)" disabled>
+                        <i data-lucide="redo-2" class="btn-icon"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="top-bar-right">
+                <span id="page-count-badge" class="page-count" style="display:none">
+                    <span id="page-count-text">0 pages</span>
+                </span>
+                <button id="btn-theme" class="top-btn icon-only" title="Toggle theme">
+                    <i data-lucide="sun" class="btn-icon theme-icon-light"></i>
+                    <i data-lucide="moon" class="btn-icon theme-icon-dark"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content Area -->
+        <div class="main-layout">
+            <!-- Left Toolbar -->
+            <aside id="toolbar" class="toolbar">
+                <div class="toolbar-tools">
+                    <button class="tool-btn active" data-tool="select" data-shortcut="V" title="Select / Move (V)">
+                        <i data-lucide="mouse-pointer-2"></i>
+                    </button>
+                    <button class="tool-btn" data-tool="forms" data-shortcut="O" title="Forms (O)">
+                        <i data-lucide="list-checks"></i>
+                    </button>
+                    <button class="tool-btn" data-tool="text" data-shortcut="T" title="Add Text (T)">
+                        <i data-lucide="type"></i>
+                    </button>
+                    <button class="tool-btn" data-tool="image" data-shortcut="I" title="Add Image (I)">
+                        <i data-lucide="image-plus"></i>
+                    </button>
+                    <div class="toolbar-separator"></div>
+                    <button class="tool-btn" data-tool="rect" data-shortcut="R" title="Rectangle (R)">
+                        <i data-lucide="square"></i>
+                    </button>
+                    <button class="tool-btn" data-tool="ellipse" data-shortcut="E" title="Ellipse (E)">
+                        <i data-lucide="circle"></i>
+                    </button>
+                    <button class="tool-btn" data-tool="line" data-shortcut="L" title="Line / Arrow (L)">
+                        <i data-lucide="pen-line"></i>
+                    </button>
+                    <button class="tool-btn" data-tool="freehand" data-shortcut="F" title="Freehand Draw (F)">
+                        <i data-lucide="pencil-line"></i>
+                    </button>
+                    <div class="toolbar-separator"></div>
+                    <button class="tool-btn" data-tool="highlight" data-shortcut="H" title="Highlight (H)">
+                        <i data-lucide="highlighter"></i>
+                    </button>
+                    <button class="tool-btn" data-tool="redaction" data-shortcut="X" title="Redaction / Blackout (X)">
+                        <i data-lucide="shield"></i>
+                    </button>
+                    <div class="toolbar-separator"></div>
+                    <button class="tool-btn" data-tool="eraser" data-shortcut="Del" title="Delete Selected (Del)">
+                        <i data-lucide="eraser"></i>
+                    </button>
+                    <div class="toolbar-spacer"></div>
+                    <button class="tool-btn" id="btn-toggle-thumbs" data-shortcut="" title="Toggle page thumbnails">
+                        <i data-lucide="panel-left-open"></i>
+                    </button>
+                </div>
+            </aside>
+
+            <!-- Left Sidebar - Thumbnails (collapsible) -->
+            <aside id="thumbnails-panel" class="thumbnails-panel">
+                <div class="thumbnails-header">
+                    <span>Pages</span>
+                    <div class="thumbnails-header-actions">
+                        <button id="btn-add-page-header" class="icon-btn-sm" title="Add page after current page">
+                            <i data-lucide="plus" class="btn-icon-sm"></i>
+                        </button>
+                        <button id="btn-close-thumbs" class="icon-btn-sm" title="Close pages panel">
+                            <i data-lucide="panel-left-close" class="btn-icon-sm"></i>
+                        </button>
+                    </div>
+                </div>
+                <div id="thumbnails-list" class="thumbnails-list"></div>
+                <button id="btn-add-page" class="add-page-btn" title="Add new page">
+                    <i data-lucide="plus" class="btn-icon-sm"></i>
+                    <span>Add Blank Page</span>
+                </button>
+            </aside>
+
+            <!-- Center Canvas Area -->
+            <main class="canvas-area">
+                <!-- Upload Zone (initial state) -->
+                <div id="upload-zone" class="upload-zone">
+                    <div class="upload-zone-inner">
+                        <div class="upload-icon-wrapper">
+                            <svg class="upload-pdf-icon" width="64" height="64" viewBox="0 0 64 64" fill="none">
+                                <rect x="12" y="4" width="40" height="56" rx="4" stroke="var(--color-primary)" stroke-width="2" fill="var(--color-surface)"/>
+                                <path d="M36 4L52 20" stroke="var(--color-primary)" stroke-width="2" fill="none"/>
+                                <path d="M36 4V20H52" stroke="var(--color-primary)" stroke-width="2" fill="var(--color-surface-2)"/>
+                                <text x="32" y="42" text-anchor="middle" font-family="Inter, sans-serif" font-size="10" font-weight="700" fill="var(--color-primary)">PDF</text>
+                            </svg>
+                        </div>
+                        <h2 class="upload-title">Drop a PDF here or click to upload</h2>
+                        <p class="upload-subtitle">Supports PDF files up to 50MB</p>
+                        <button id="btn-upload-zone" class="upload-btn">
+                            <i data-lucide="upload" class="btn-icon"></i>
+                            Choose PDF File
+                        </button>
+                        <button id="btn-new-zone" class="upload-btn secondary">
+                            <i data-lucide="file-plus" class="btn-icon"></i>
+                            Create Blank PDF
+                        </button>
+                        <input type="file" id="file-input" accept=".pdf,application/pdf" hidden>
+                    </div>
+                </div>
+
+                <!-- Editor Canvas (hidden initially) -->
+                <div id="editor-container" class="editor-container" style="display:none">
+                    <div id="canvas-wrapper" class="canvas-wrapper">
+                        <div id="canvas-loading" class="canvas-loading">
+                            <div class="skeleton-shimmer"></div>
+                        </div>
+                        <div id="canvas-error" class="canvas-error" style="display:none">
+                            <i data-lucide="alert-circle" class="error-icon"></i>
+                            <p>Failed to load page</p>
+                            <button id="btn-retry" class="retry-btn">Retry</button>
+                        </div>
+                        <div id="form-layer" class="form-layer"></div>
+                        <canvas id="fabric-canvas"></canvas>
+                    </div>
+
+                    <!-- Page Navigation Bar -->
+                    <div class="page-nav">
+                        <button id="btn-prev-page" class="nav-btn" title="Previous page" disabled>
+                            <i data-lucide="chevron-left" class="btn-icon-sm"></i>
+                        </button>
+                        <div class="page-info">
+                            <span>Page</span>
+                            <input type="number" id="page-input" class="page-input" min="1" value="1">
+                            <span>of <span id="total-pages">1</span></span>
+                        </div>
+                        <button id="btn-next-page" class="nav-btn" title="Next page" disabled>
+                            <i data-lucide="chevron-right" class="btn-icon-sm"></i>
+                        </button>
+                        <div class="nav-divider"></div>
+                        <button id="btn-zoom-out" class="nav-btn" title="Zoom out (-)">
+                            <i data-lucide="zoom-out" class="btn-icon-sm"></i>
+                        </button>
+                        <span id="zoom-level" class="zoom-level">100%</span>
+                        <button id="btn-zoom-in" class="nav-btn" title="Zoom in (+)">
+                            <i data-lucide="zoom-in" class="btn-icon-sm"></i>
+                        </button>
+                        <button id="btn-zoom-fit" class="nav-btn" title="Fit to view">
+                            <i data-lucide="maximize-2" class="btn-icon-sm"></i>
+                        </button>
+                        <button id="btn-zoom-100" class="nav-btn" title="100%">
+                            1:1
+                        </button>
+                    </div>
+                </div>
+            </main>
+
+            <!-- Right Properties Panel -->
+            <aside id="properties-panel" class="properties-panel">
+                <div id="props-empty" class="props-empty">
+                    <i data-lucide="mouse-pointer-click" class="props-empty-icon"></i>
+                    <p>Select an element to edit its properties</p>
+                </div>
+
+                <div id="props-text" class="props-section" style="display:none">
+                    <h3 class="props-title">Text Properties</h3>
+                    <div class="prop-group">
+                        <label class="prop-label">Font Family</label>
+                        <select id="prop-font-family" class="prop-select">
+                            <option value="Helvetica">Helvetica</option>
+                            <option value="Times New Roman">Times New Roman</option>
+                            <option value="Courier New">Courier New</option>
+                            <option value="Arial">Arial</option>
+                            <option value="Georgia">Georgia</option>
+                            <option value="Verdana">Verdana</option>
+                            <option value="Trebuchet MS">Trebuchet MS</option>
+                            <option value="Palatino">Palatino</option>
+                            <option value="Garamond">Garamond</option>
+                            <option value="Comic Sans MS">Comic Sans MS</option>
+                        </select>
+                    </div>
+                    <div class="prop-row">
+                        <div class="prop-group flex-1">
+                            <label class="prop-label">Size</label>
+                            <input type="number" id="prop-font-size" class="prop-input" min="6" max="200" value="16">
+                        </div>
+                        <div class="prop-group">
+                            <label class="prop-label">Style</label>
+                            <div class="prop-btn-group">
+                                <button id="prop-bold" class="prop-toggle" title="Bold">
+                                    <strong>B</strong>
+                                </button>
+                                <button id="prop-italic" class="prop-toggle" title="Italic">
+                                    <em>I</em>
+                                </button>
+                                <button id="prop-underline" class="prop-toggle" title="Underline">
+                                    <u>U</u>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="prop-row">
+                        <div class="prop-group flex-1">
+                            <label class="prop-label">Text Color</label>
+                            <input type="color" id="prop-text-color" class="prop-color" value="#000000">
+                        </div>
+                        <div class="prop-group flex-1">
+                            <label class="prop-label">Background</label>
+                            <div class="color-with-clear">
+                                <input type="color" id="prop-text-bg" class="prop-color" value="#ffffff">
+                                <button id="prop-clear-text-bg" class="color-clear-btn" title="Clear background">✕</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Opacity</label>
+                        <div class="prop-control-stack">
+                            <div class="prop-value-box compact">
+                                <button class="prop-step-btn" type="button" data-step-target="prop-text-opacity" data-step="-10" title="Decrease opacity by 10">-10</button>
+                                <input type="number" id="prop-text-opacity" class="prop-input prop-input-compact" min="0" max="100" step="5" value="100">
+                                <span class="prop-unit">%</span>
+                                <button class="prop-step-btn" type="button" data-step-target="prop-text-opacity" data-step="10" title="Increase opacity by 10">+10</button>
+                            </div>
+                            <div class="prop-chip-group prop-chip-group-opacity" data-chip-target="prop-text-opacity">
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="25"><span class="opacity-swatch opacity-25"></span><span>25%</span></button>
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="50"><span class="opacity-swatch opacity-50"></span><span>50%</span></button>
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="75"><span class="opacity-swatch opacity-75"></span><span>75%</span></button>
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="100"><span class="opacity-swatch opacity-100"></span><span>100%</span></button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Rotation</label>
+                        <div class="prop-control-stack">
+                            <div class="prop-value-box compact">
+                                <button class="prop-step-btn" type="button" data-step-target="prop-text-rotation" data-step="-15" title="Rotate left 15 degrees">-15</button>
+                                <input type="number" id="prop-text-rotation" class="prop-input prop-input-compact" min="0" max="360" step="5" value="0">
+                                <span class="prop-unit">°</span>
+                                <button class="prop-step-btn" type="button" data-step-target="prop-text-rotation" data-step="15" title="Rotate right 15 degrees">+15</button>
+                            </div>
+                            <div class="prop-chip-group prop-chip-group-rotation" data-chip-target="prop-text-rotation">
+                                <button class="prop-chip prop-chip-rotation" type="button" data-value="0"><span class="rotation-glyph">A</span><span>0°</span></button>
+                                <button class="prop-chip prop-chip-rotation" type="button" data-value="90"><span class="rotation-glyph rotate-90">A</span><span>90°</span></button>
+                                <button class="prop-chip prop-chip-rotation" type="button" data-value="180"><span class="rotation-glyph rotate-180">A</span><span>180°</span></button>
+                                <button class="prop-chip prop-chip-rotation" type="button" data-value="270"><span class="rotation-glyph rotate-270">A</span><span>270°</span></button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="props-shape" class="props-section" style="display:none">
+                    <h3 class="props-title">Shape Properties</h3>
+                    <div class="prop-row">
+                        <div class="prop-group flex-1">
+                            <label class="prop-label">Fill Color</label>
+                            <div class="color-with-clear">
+                                <input type="color" id="prop-fill" class="prop-color" value="#4f98a3">
+                                <button id="prop-clear-fill" class="color-clear-btn" title="No fill">✕</button>
+                            </div>
+                        </div>
+                        <div class="prop-group flex-1">
+                            <label class="prop-label">Stroke Color</label>
+                            <div class="color-with-clear">
+                                <input type="color" id="prop-stroke" class="prop-color" value="#01696f">
+                                <button id="prop-clear-stroke" class="color-clear-btn" title="No stroke">✕</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Stroke Width</label>
+                        <div class="prop-control-stack">
+                            <div class="prop-value-box compact">
+                                <button class="prop-step-btn" type="button" data-step-target="prop-stroke-width" data-step="-1" title="Decrease stroke width">-</button>
+                                <input type="number" id="prop-stroke-width" class="prop-input prop-input-compact" min="0" max="20" step="1" value="2">
+                                <span class="prop-unit">px</span>
+                                <button class="prop-step-btn" type="button" data-step-target="prop-stroke-width" data-step="1" title="Increase stroke width">+</button>
+                            </div>
+                            <div class="prop-chip-group prop-chip-group-stroke" data-chip-target="prop-stroke-width">
+                                <button class="prop-chip prop-chip-stroke" type="button" data-value="0"><span class="stroke-preview stroke-preview-0"></span><span>Hairline</span></button>
+                                <button class="prop-chip prop-chip-stroke" type="button" data-value="2"><span class="stroke-preview stroke-preview-2"></span><span>2 px</span></button>
+                                <button class="prop-chip prop-chip-stroke" type="button" data-value="4"><span class="stroke-preview stroke-preview-4"></span><span>4 px</span></button>
+                                <button class="prop-chip prop-chip-stroke" type="button" data-value="8"><span class="stroke-preview stroke-preview-8"></span><span>Bold</span></button>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="corner-radius-group" class="prop-group">
+                        <label class="prop-label">Corner Radius</label>
+                        <div class="prop-control-stack">
+                            <div class="prop-value-box compact">
+                                <button class="prop-step-btn" type="button" data-step-target="prop-corner-radius" data-step="-2" title="Decrease corner radius">-2</button>
+                                <input type="number" id="prop-corner-radius" class="prop-input prop-input-compact" min="0" max="50" step="1" value="0">
+                                <span class="prop-unit">px</span>
+                                <button class="prop-step-btn" type="button" data-step-target="prop-corner-radius" data-step="2" title="Increase corner radius">+2</button>
+                            </div>
+                            <div class="prop-chip-group prop-chip-group-radius" data-chip-target="prop-corner-radius">
+                                <button class="prop-chip prop-chip-radius" type="button" data-value="0"><span class="radius-preview radius-preview-0"></span><span>Sharp</span></button>
+                                <button class="prop-chip prop-chip-radius" type="button" data-value="8"><span class="radius-preview radius-preview-8"></span><span>Soft</span></button>
+                                <button class="prop-chip prop-chip-radius" type="button" data-value="16"><span class="radius-preview radius-preview-16"></span><span>Round</span></button>
+                                <button class="prop-chip prop-chip-radius" type="button" data-value="24"><span class="radius-preview radius-preview-24"></span><span>Pill</span></button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Opacity</label>
+                        <div class="prop-control-stack">
+                            <div class="prop-value-box compact">
+                                <button class="prop-step-btn" type="button" data-step-target="prop-shape-opacity" data-step="-10" title="Decrease opacity by 10">-10</button>
+                                <input type="number" id="prop-shape-opacity" class="prop-input prop-input-compact" min="0" max="100" step="5" value="100">
+                                <span class="prop-unit">%</span>
+                                <button class="prop-step-btn" type="button" data-step-target="prop-shape-opacity" data-step="10" title="Increase opacity by 10">+10</button>
+                            </div>
+                            <div class="prop-chip-group prop-chip-group-opacity" data-chip-target="prop-shape-opacity">
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="25"><span class="opacity-swatch opacity-25"></span><span>25%</span></button>
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="50"><span class="opacity-swatch opacity-50"></span><span>50%</span></button>
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="75"><span class="opacity-swatch opacity-75"></span><span>75%</span></button>
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="100"><span class="opacity-swatch opacity-100"></span><span>100%</span></button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Rotation</label>
+                        <div class="prop-control-stack">
+                            <div class="prop-value-box compact">
+                                <button class="prop-step-btn" type="button" data-step-target="prop-shape-rotation" data-step="-15" title="Rotate left 15 degrees">-15</button>
+                                <input type="number" id="prop-shape-rotation" class="prop-input prop-input-compact" min="0" max="360" step="5" value="0">
+                                <span class="prop-unit">°</span>
+                                <button class="prop-step-btn" type="button" data-step-target="prop-shape-rotation" data-step="15" title="Rotate right 15 degrees">+15</button>
+                            </div>
+                            <div class="prop-chip-group prop-chip-group-rotation" data-chip-target="prop-shape-rotation">
+                                <button class="prop-chip prop-chip-rotation" type="button" data-value="0"><span class="rotation-glyph">▭</span><span>0°</span></button>
+                                <button class="prop-chip prop-chip-rotation" type="button" data-value="90"><span class="rotation-glyph rotate-90">▭</span><span>90°</span></button>
+                                <button class="prop-chip prop-chip-rotation" type="button" data-value="180"><span class="rotation-glyph rotate-180">▭</span><span>180°</span></button>
+                                <button class="prop-chip prop-chip-rotation" type="button" data-value="270"><span class="rotation-glyph rotate-270">▭</span><span>270°</span></button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="props-image" class="props-section" style="display:none">
+                    <h3 class="props-title">Image Properties</h3>
+                    <div class="prop-row">
+                        <div class="prop-group flex-1">
+                            <label class="prop-label">Width</label>
+                            <input type="number" id="prop-img-width" class="prop-input" min="10">
+                        </div>
+                        <div class="prop-group flex-1">
+                            <label class="prop-label">Height</label>
+                            <input type="number" id="prop-img-height" class="prop-input" min="10">
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Aspect Ratio</label>
+                        <div class="prop-btn-group">
+                            <button id="prop-lock-ratio" class="prop-toggle active" title="Lock aspect ratio">
+                                <i data-lucide="lock" class="btn-icon-sm"></i>
+                            </button>
+                            <button id="prop-unlock-ratio" class="prop-toggle" title="Unlock aspect ratio">
+                                <i data-lucide="unlock" class="btn-icon-sm"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Opacity</label>
+                        <div class="prop-control-stack">
+                            <div class="prop-value-box compact">
+                                <button class="prop-step-btn" type="button" data-step-target="prop-img-opacity" data-step="-10" title="Decrease opacity by 10">-10</button>
+                                <input type="number" id="prop-img-opacity" class="prop-input prop-input-compact" min="0" max="100" step="5" value="100">
+                                <span class="prop-unit">%</span>
+                                <button class="prop-step-btn" type="button" data-step-target="prop-img-opacity" data-step="10" title="Increase opacity by 10">+10</button>
+                            </div>
+                            <div class="prop-chip-group prop-chip-group-opacity" data-chip-target="prop-img-opacity">
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="25"><span class="opacity-swatch opacity-25"></span><span>25%</span></button>
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="50"><span class="opacity-swatch opacity-50"></span><span>50%</span></button>
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="75"><span class="opacity-swatch opacity-75"></span><span>75%</span></button>
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="100"><span class="opacity-swatch opacity-100"></span><span>100%</span></button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Rotation</label>
+                        <div class="prop-control-stack">
+                            <div class="prop-value-box compact">
+                                <button class="prop-step-btn" type="button" data-step-target="prop-img-rotation" data-step="-15" title="Rotate left 15 degrees">-15</button>
+                                <input type="number" id="prop-img-rotation" class="prop-input prop-input-compact" min="0" max="360" step="5" value="0">
+                                <span class="prop-unit">°</span>
+                                <button class="prop-step-btn" type="button" data-step-target="prop-img-rotation" data-step="15" title="Rotate right 15 degrees">+15</button>
+                            </div>
+                            <div class="prop-chip-group prop-chip-group-rotation" data-chip-target="prop-img-rotation">
+                                <button class="prop-chip prop-chip-rotation" type="button" data-value="0"><span class="rotation-glyph">▣</span><span>0°</span></button>
+                                <button class="prop-chip prop-chip-rotation" type="button" data-value="90"><span class="rotation-glyph rotate-90">▣</span><span>90°</span></button>
+                                <button class="prop-chip prop-chip-rotation" type="button" data-value="180"><span class="rotation-glyph rotate-180">▣</span><span>180°</span></button>
+                                <button class="prop-chip prop-chip-rotation" type="button" data-value="270"><span class="rotation-glyph rotate-270">▣</span><span>270°</span></button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Arrange</label>
+                        <div class="prop-btn-group">
+                            <button id="prop-bring-front" class="prop-toggle" title="Bring to front">
+                                <i data-lucide="arrow-up" class="btn-icon-sm"></i>
+                            </button>
+                            <button id="prop-send-back" class="prop-toggle" title="Send to back">
+                                <i data-lucide="arrow-down" class="btn-icon-sm"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="props-page" class="props-section" style="display:none">
+                    <h3 class="props-title">Page Properties</h3>
+                    <div class="prop-row">
+                        <div class="prop-group flex-1">
+                            <label class="prop-label">Width (pts)</label>
+                            <input type="number" id="prop-page-width" class="prop-input" disabled>
+                        </div>
+                        <div class="prop-group flex-1">
+                            <label class="prop-label">Height (pts)</label>
+                            <input type="number" id="prop-page-height" class="prop-input" disabled>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Rotate Page</label>
+                        <div class="prop-btn-group">
+                            <button id="btn-rotate-90" class="prop-toggle" title="Rotate 90° CW">
+                                90°
+                            </button>
+                            <button id="btn-rotate-180" class="prop-toggle" title="Rotate 180°">
+                                180°
+                            </button>
+                            <button id="btn-rotate-270" class="prop-toggle" title="Rotate 270° CW">
+                                270°
+                            </button>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <button id="btn-delete-page" class="danger-btn" title="Delete this page">
+                            <i data-lucide="trash-2" class="btn-icon-sm"></i>
+                            Delete Page
+                        </button>
+                    </div>
+                    <div class="prop-group">
+                        <div class="page-action-grid">
+                            <button id="btn-duplicate-page" class="secondary-btn" title="Duplicate current page">
+                                <i data-lucide="copy" class="btn-icon-sm"></i>
+                                Duplicate
+                            </button>
+                            <button id="btn-export-page" class="secondary-btn" title="Export current page as a PDF">
+                                <i data-lucide="download" class="btn-icon-sm"></i>
+                                Export Page
+                            </button>
+                            <button id="btn-extract-text" class="secondary-btn" title="Extract page text to a TXT file">
+                                <i data-lucide="file-text" class="btn-icon-sm"></i>
+                                Extract Text
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="props-form" class="props-section" style="display:none">
+                    <h3 class="props-title">Form Fields</h3>
+                    <div class="form-summary-card">
+                        <span id="prop-form-count" class="form-summary-count">0 fields on this page</span>
+                        <span id="prop-form-selected" class="form-summary-selected">Select a field to inspect its value</span>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Create Field</label>
+                        <div class="form-create-grid">
+                            <button id="btn-add-form-text" class="secondary-btn form-create-btn" type="button">
+                                <i data-lucide="text-cursor-input" class="btn-icon-sm"></i>
+                                Text
+                            </button>
+                            <button id="btn-add-form-checkbox" class="secondary-btn form-create-btn" type="button">
+                                <i data-lucide="check-square" class="btn-icon-sm"></i>
+                                Checkbox
+                            </button>
+                            <button id="btn-add-form-choice" class="secondary-btn form-create-btn" type="button">
+                                <i data-lucide="list" class="btn-icon-sm"></i>
+                                Dropdown
+                            </button>
+                            <button id="btn-add-form-radio" class="secondary-btn form-create-btn" type="button">
+                                <i data-lucide="circle-dot" class="btn-icon-sm"></i>
+                                Radio
+                            </button>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Page Fields</label>
+                        <div id="prop-form-list" class="form-field-list"></div>
+                    </div>
+                    <div id="prop-form-detail" class="form-detail" style="display:none">
+                        <div class="prop-group">
+                            <label class="prop-label">Field Name</label>
+                            <input type="text" id="prop-form-name" class="prop-input" disabled>
+                        </div>
+                        <div class="prop-group">
+                            <label class="prop-label">Label</label>
+                            <input type="text" id="prop-form-label" class="prop-input" disabled>
+                        </div>
+                        <div class="prop-group">
+                            <label class="prop-label">Type</label>
+                            <input type="text" id="prop-form-type" class="prop-input" disabled>
+                        </div>
+                        <div id="prop-form-text-group" class="prop-group" style="display:none">
+                            <label class="prop-label">Value</label>
+                            <input type="text" id="prop-form-text" class="prop-input" placeholder="Enter field value">
+                        </div>
+                        <div id="prop-form-choice-group" class="prop-group" style="display:none">
+                            <label class="prop-label">Selected Option</label>
+                            <select id="prop-form-choice" class="prop-select"></select>
+                        </div>
+                        <div id="prop-form-bool-group" class="prop-group" style="display:none">
+                            <label class="prop-label">State</label>
+                            <label class="form-bool-row">
+                                <input type="checkbox" id="prop-form-bool">
+                                <span id="prop-form-bool-label">Checked</span>
+                            </label>
+                        </div>
+                        <div class="prop-group">
+                            <button id="btn-delete-form" type="button" class="danger-btn form-delete-btn">
+                                <i data-lucide="trash-2" class="btn-icon-sm"></i>
+                                Delete Field
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </div>
+
+        <!-- New PDF Modal -->
+        <div id="new-pdf-modal" class="modal" style="display:none">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content">
+                <h2 class="modal-title">Create New PDF</h2>
+                <div class="prop-group">
+                    <label class="prop-label">Page Size</label>
+                    <select id="new-page-size" class="prop-select">
+                        <option value="A4">A4 (595 × 842)</option>
+                        <option value="Letter">Letter (612 × 792)</option>
+                        <option value="Legal">Legal (612 × 1008)</option>
+                        <option value="A3">A3 (842 × 1191)</option>
+                        <option value="A5">A5 (420 × 595)</option>
+                        <option value="custom">Custom</option>
+                    </select>
+                </div>
+                <div id="custom-size-fields" class="prop-row" style="display:none">
+                    <div class="prop-group flex-1">
+                        <label class="prop-label">Width (pts)</label>
+                        <input type="number" id="new-custom-width" class="prop-input" value="595" min="100" max="5000">
+                    </div>
+                    <div class="prop-group flex-1">
+                        <label class="prop-label">Height (pts)</label>
+                        <input type="number" id="new-custom-height" class="prop-input" value="842" min="100" max="5000">
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button id="btn-cancel-new" class="modal-btn cancel">Cancel</button>
+                    <button id="btn-create-new" class="modal-btn confirm">Create</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Toast Container -->
+        <div id="toast-container" class="toast-container"></div>
+
+        <div id="editor-context-menu" class="context-menu" style="display:none">
+            <button id="btn-context-delete" type="button" class="context-menu-item context-menu-item-danger" title="Delete selected objects">
+                <i data-lucide="trash-2" class="btn-icon-sm"></i>
+                <span>Delete</span>
+            </button>
+        </div>
+
+        <!-- Mobile Banner -->
+        <div id="mobile-banner" class="mobile-banner" style="display:none">
+            <i data-lucide="monitor" class="btn-icon"></i>
+            <span>Please use a desktop browser for full editing capabilities.</span>
+        </div>
+
+        <!-- Hidden file input for image insertion -->
+        <input type="file" id="image-input" accept="image/png,image/jpeg,image/svg+xml,image/webp" hidden>
+    </div>
+
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    </script>
+    <script src="{{ url_for('static', filename='api.js') }}"></script>
+    <script src="{{ url_for('static', filename='editor.js') }}"></script>
+    <script src="{{ url_for('static', filename='forms.js') }}"></script>
+    <script src="{{ url_for('static', filename='toolbar.js') }}"></script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
