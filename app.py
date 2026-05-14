@@ -1190,6 +1190,15 @@ def extract_page_elements(doc, page, scale=2.0, include_widgets=False):
                 if not elem["fill"]:
                     elem["fill"] = "#ffff00"
                 elem["opacity"] = 0.3
+            elif annot_type_num == 20:
+                elem["type"] = "sticky"
+                elem["text"] = content or "Note"
+                elem["fill"] = "#000000"
+                elem["stickyColor"] = "#fff9c4"
+                elem["fontSize"] = 14 * scale
+                elem["fontFamily"] = "Helvetica"
+                if not elem["fill"]:
+                    elem["fill"] = "#000000"
             elif annot_type_num == 14:
                 elem["type"] = "rect"
             elif annot_type_num == 15:
@@ -1521,7 +1530,7 @@ def save_page(session_id, page_num):
             redactions.append(elem)
         elif etype == "highlight":
             highlights.append(elem)
-        elif etype == "text" or etype == "textbox":
+        elif etype == "text" or etype == "textbox" or etype == "sticky":
             texts.append(elem)
         elif etype == "image":
             images_list.append(elem)
@@ -1689,6 +1698,11 @@ def save_page(session_id, page_num):
         bg_hex = elem.get("backgroundColor", "")
         bg_color = parse_color_input(bg_hex) if bg_hex else None
 
+        if elem.get("type") == "sticky":
+            sticky_color = elem.get("stickyColor", "#fff9c4")
+            bg_color = parse_color_input(sticky_color)
+            bg_hex = sticky_color
+
         opacity = float(elem.get("opacity", 1))
 
         if bg_color:
@@ -1728,6 +1742,13 @@ def save_page(session_id, page_num):
                     fontsize=max(font_size, 4),
                     color=color_val,
                 )
+            except Exception:
+                pass
+
+        if elem.get("type") == "sticky":
+            try:
+                annot_point = fitz.Point(rect.x0, rect.y0)
+                page.add_text_annot(annot_point, text or "Note", icon="Note")
             except Exception:
                 pass
 

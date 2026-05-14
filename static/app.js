@@ -18,6 +18,7 @@ class App {
         this.thumbnailsVisible = true;
         this.selectedFormXref = null;
         this.pendingPageLoad = null;
+        this._currentStickyObj = null;
     }
 
     init() {
@@ -46,10 +47,19 @@ class App {
         this.editor.onObjectSelected = (objects) => {
             this._clearFormSelection(false);
             this.toolbar.showPropertiesForObjects(objects);
+            if (objects && objects.length === 1 && objects[0]._elementType === 'sticky') {
+                this._showStickyPopup(objects[0]);
+            } else {
+                this._hideStickyPopup();
+            }
+        };
+        this.editor.onStickyDoubleClicked = (obj) => {
+            this._showStickyPopup(obj);
         };
         this.editor.onContextMenuRequested = (context) => this._handleCanvasContextMenu(context);
         this.editor.onSelectionCleared = () => {
             this._hideCanvasContextMenu();
+            this._hideStickyPopup();
             if (!this.isLoading) {
                 this._showContextProperties();
             }
@@ -112,7 +122,12 @@ class App {
             btnExtractText: document.getElementById('btn-extract-text'),
             editorContextMenu: document.getElementById('editor-context-menu'),
             btnContextDelete: document.getElementById('btn-context-delete'),
+            btnContextPin: document.getElementById('btn-context-pin'),
+            btnContextUnpin: document.getElementById('btn-context-unpin'),
             toastContainer: document.getElementById('toast-container'),
+            stickyPopup: document.getElementById('sticky-note-popup'),
+            stickyPopupClose: document.getElementById('sticky-popup-close'),
+            stickyPopupTextarea: document.getElementById('sticky-popup-textarea'),
         };
     }
 
@@ -155,8 +170,13 @@ class App {
         this.els.btnExportPage.addEventListener('click', () => this._exportCurrentPage());
         this.els.btnExtractText.addEventListener('click', () => this._extractCurrentPageText());
         this.els.btnContextDelete.addEventListener('click', () => this._deleteSelectedObjects());
+        this.els.btnContextPin.addEventListener('click', () => this._toggleStickyPin(true));
+        this.els.btnContextUnpin.addEventListener('click', () => this._toggleStickyPin(false));
 
         this.els.imageInput.addEventListener('change', (e) => this._onImageSelected(e));
+
+        this.els.stickyPopupClose.addEventListener('click', () => this._hideStickyPopup(true));
+        this.els.stickyPopupTextarea.addEventListener('input', () => this._saveStickyPopupText());
 
         document.addEventListener('click', (e) => {
             if (!this.els.editorContextMenu.contains(e.target)) {
@@ -172,7 +192,10 @@ class App {
             this._hideCanvasContextMenu();
             this.formLayer.syncPosition();
         });
-        this.els.canvasWrapper.addEventListener('scroll', () => this._hideCanvasContextMenu());
+        this.els.canvasWrapper.addEventListener('scroll', () => {
+            this._hideCanvasContextMenu();
+            this._repositionStickyPopup();
+        });
 
         const modalBackdrop = this.els.newPdfModal.querySelector('.modal-backdrop');
         modalBackdrop.addEventListener('click', () => this._hideNewPdfModal());
@@ -285,6 +308,9 @@ class App {
                     break;
                 case 'h':
                     this._onToolChange('highlight');
+                    break;
+                case 'n':
+                    this._onToolChange('sticky');
                     break;
                 case 'x':
                     this._onToolChange('redaction');
@@ -636,6 +662,7 @@ class App {
         this.formLayer.setZoom(this.editor.zoomLevel);
         this.formLayer.syncPosition();
         this.els.zoomLevel.textContent = Math.round(this.editor.zoomLevel * 100) + '%';
+        this._repositionStickyPopup();
     }
 
     _handleCanvasContextMenu(context) {
@@ -645,6 +672,20 @@ class App {
         }
 
         const menu = this.els.editorContextMenu;
+        const btnPin = this.els.btnContextPin;
+        const btnUnpin = this.els.btnContextUnpin;
+
+        const target = context.target;
+        const isSticky = target && target._elementType === 'sticky';
+        if (isSticky) {
+            const pinned = !!target._stickyPinned;
+            btnPin.style.display = pinned ? 'none' : 'flex';
+            btnUnpin.style.display = pinned ? 'flex' : 'none';
+        } else {
+            btnPin.style.display = 'none';
+            btnUnpin.style.display = 'none';
+        }
+
         menu.style.display = 'block';
 
         const { innerWidth, innerHeight } = window;
@@ -663,6 +704,23 @@ class App {
     _deleteSelectedObjects() {
         this._hideCanvasContextMenu();
         this.editor.deleteSelected();
+    }
+
+    _toggleStickyPin(pin) {
+        this._hideCanvasContextMenu();
+        const obj = this.editor.getActiveObject();
+        if (!obj || obj._elementType !== 'sticky') return;
+        obj._stickyPinned = pin;
+        obj.set({
+            lockMovementX: pin,
+            lockMovementY: pin,
+        });
+        if (pin) {
+            this._showStickyPopup(obj);
+        } else {
+            this._hideStickyPopup(true);
+        }
+        this.editor.canvas.requestRenderAll();
     }
 
     _fitToView() {
@@ -955,6 +1013,9 @@ class App {
             case 'image':
                 this._applyImageProp(obj, prop, value);
                 break;
+            case 'sticky':
+                this._applyStickyProp(obj, prop, value);
+                break;
         }
 
         if (obj.origin === 'pdf') {
@@ -1060,6 +1121,112 @@ class App {
                 this.editor.sendToBack(obj);
                 return;
         }
+    }
+
+    _applyStickyProp(obj, prop, value) {
+        switch (prop) {
+            case 'opacity':
+                obj.set('opacity', value);
+                break;
+            case 'stickyColor': {
+                const darkColor = this._darkenStickyColor(value);
+                obj.set('_stickyColor', value);
+                const children = obj.getObjects();
+                if (children[0]) {
+                    children[0].set({ fill: value, stroke: darkColor });
+                }
+                if (children[1]) {
+                    children[1].set({ fill: darkColor, stroke: darkColor });
+                }
+                obj.dirty = true;
+                if (this._currentStickyObj === obj) {
+                    this._updateStickyPopupColor(value);
+                }
+                this.editor.renderAll();
+                break;
+            }
+        }
+    }
+
+    _darkenStickyColor(hex) {
+        if (!hex || !hex.startsWith('#') || hex.length < 7) return '#999999';
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        const factor = 0.7;
+        return '#' + [r, g, b].map(c => Math.round(c * factor).toString(16).padStart(2, '0')).join('');
+    }
+
+    _showStickyPopup(obj) {
+        this._hideStickyPopup(true);
+        this._currentStickyObj = obj;
+
+        const color = obj._stickyColor || '#fff9c4';
+        this._updateStickyPopupColor(color);
+        this.els.stickyPopupTextarea.value = obj._stickyText || '';
+        this._positionStickyPopup(obj);
+        this.els.stickyPopup.style.display = 'block';
+
+        const pinIcon = this.els.stickyPopup.querySelector('.sticky-popup-pin-icon');
+        if (pinIcon) pinIcon.style.display = obj._stickyPinned ? 'inline' : 'none';
+
+        setTimeout(() => this.els.stickyPopupTextarea.focus(), 50);
+    }
+
+    _hideStickyPopup(force) {
+        if (!force && this._currentStickyObj && this._currentStickyObj._stickyPinned) return;
+        this._saveStickyPopupText();
+        this._currentStickyObj = null;
+        this.els.stickyPopup.style.display = 'none';
+        const pinIcon = this.els.stickyPopup.querySelector('.sticky-popup-pin-icon');
+        if (pinIcon) pinIcon.style.display = 'none';
+    }
+
+    _saveStickyPopupText() {
+        if (!this._currentStickyObj) return;
+        const newText = this.els.stickyPopupTextarea.value;
+        if (this._currentStickyObj._stickyText !== newText) {
+            this._currentStickyObj._stickyText = newText;
+        }
+    }
+
+    _updateStickyPopupColor(color) {
+        const darkColor = this._darkenStickyColor(color);
+        this.els.stickyPopup.querySelector('.sticky-popup-header').style.background = darkColor;
+        this.els.stickyPopup.querySelector('.sticky-popup-body').style.background = color;
+    }
+
+    _positionStickyPopup(obj) {
+        const bounds = obj.getBoundingRect();
+        const canvasContainer = this.els.canvasWrapper.querySelector('.canvas-container') || this.els.canvasWrapper.querySelector('#fabric-canvas');
+        if (!canvasContainer) return;
+
+        const canvasRect = canvasContainer.getBoundingClientRect();
+        const wrapperRect = this.els.canvasWrapper.getBoundingClientRect();
+
+        const offsetLeft = canvasRect.left - wrapperRect.left + this.els.canvasWrapper.scrollLeft;
+        const offsetTop = canvasRect.top - wrapperRect.top + this.els.canvasWrapper.scrollTop;
+
+        const popupWidth = 220;
+        const popupHeight = 180;
+
+        let left = offsetLeft + bounds.left + bounds.width + 8;
+        let top = offsetTop + bounds.top - 10;
+
+        if (left + popupWidth > this.els.canvasWrapper.scrollLeft + this.els.canvasWrapper.clientWidth) {
+            left = offsetLeft + bounds.left - popupWidth - 8;
+        }
+        if (top + popupHeight > this.els.canvasWrapper.scrollTop + this.els.canvasWrapper.clientHeight) {
+            top = offsetTop + bounds.top + bounds.height - popupHeight + 10;
+        }
+
+        this.els.stickyPopup.style.left = `${Math.max(4, left)}px`;
+        this.els.stickyPopup.style.top = `${Math.max(4, top)}px`;
+    }
+
+    _repositionStickyPopup() {
+        if (!this._currentStickyObj || this.els.stickyPopup.style.display === 'none') return;
+        this._positionStickyPopup(this._currentStickyObj);
     }
 
     async _onImageSelected(e) {

@@ -99,6 +99,9 @@
                     <button class="tool-btn" data-tool="highlight" data-shortcut="H" title="Highlight (H)">
                         <i data-lucide="highlighter"></i>
                     </button>
+                    <button class="tool-btn" data-tool="sticky" data-shortcut="N" title="Sticky Note (N)">
+                        <i data-lucide="sticky-note"></i>
+                    </button>
                     <button class="tool-btn" data-tool="redaction" data-shortcut="X" title="Redaction / Blackout (X)">
                         <i data-lucide="shield"></i>
                     </button>
@@ -172,6 +175,16 @@
                             <button id="btn-retry" class="retry-btn">Retry</button>
                         </div>
                         <div id="form-layer" class="form-layer"></div>
+                        <div id="sticky-note-popup" class="sticky-popup" style="display:none">
+                            <div class="sticky-popup-header">
+                                <span class="sticky-popup-title">Sticky Note</span>
+                                <i data-lucide="pin" class="sticky-popup-pin-icon" style="display:none"></i>
+                                <button id="sticky-popup-close" class="sticky-popup-close" type="button" title="Close note">&times;</button>
+                            </div>
+                            <div class="sticky-popup-body">
+                                <textarea id="sticky-popup-textarea" class="sticky-popup-textarea" placeholder="Type your note..." rows="5"></textarea>
+                            </div>
+                        </div>
                         <canvas id="fabric-canvas"></canvas>
                         <div id="drop-overlay" class="drop-overlay" style="display:none">
                             <div class="drop-overlay-inner">
@@ -519,6 +532,37 @@
                     </div>
                 </div>
 
+                <div id="props-sticky" class="props-section" style="display:none">
+                    <h3 class="props-title">Sticky Note</h3>
+                    <div class="prop-group">
+                        <label class="prop-label">Note Color</label>
+                        <div class="sticky-color-grid">
+                            <button class="sticky-color-btn active" type="button" data-sticky-color="#fff9c4" style="background:#fff9c4" title="Yellow"></button>
+                            <button class="sticky-color-btn" type="button" data-sticky-color="#c8e6c9" style="background:#c8e6c9" title="Green"></button>
+                            <button class="sticky-color-btn" type="button" data-sticky-color="#f8bbd0" style="background:#f8bbd0" title="Pink"></button>
+                            <button class="sticky-color-btn" type="button" data-sticky-color="#b3e5fc" style="background:#b3e5fc" title="Blue"></button>
+                            <button class="sticky-color-btn" type="button" data-sticky-color="#ffe0b2" style="background:#ffe0b2" title="Orange"></button>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Opacity</label>
+                        <div class="prop-control-stack">
+                            <div class="prop-value-box compact">
+                                <button class="prop-step-btn" type="button" data-step-target="prop-sticky-opacity" data-step="-10" title="Decrease opacity by 10">-10</button>
+                                <input type="number" id="prop-sticky-opacity" class="prop-input prop-input-compact" min="0" max="100" step="5" value="100">
+                                <span class="prop-unit">%</span>
+                                <button class="prop-step-btn" type="button" data-step-target="prop-sticky-opacity" data-step="10" title="Increase opacity by 10">+10</button>
+                            </div>
+                            <div class="prop-chip-group prop-chip-group-opacity" data-chip-target="prop-sticky-opacity">
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="25"><span class="opacity-swatch opacity-25"></span><span>25%</span></button>
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="50"><span class="opacity-swatch opacity-50"></span><span>50%</span></button>
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="75"><span class="opacity-swatch opacity-75"></span><span>75%</span></button>
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="100"><span class="opacity-swatch opacity-100"></span><span>100%</span></button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="props-page" class="props-section" style="display:none">
                     <h3 class="props-title">Page Properties</h3>
                     <div class="prop-row">
@@ -676,6 +720,14 @@
         <div id="toast-container" class="toast-container"></div>
 
         <div id="editor-context-menu" class="context-menu" style="display:none">
+            <button id="btn-context-pin" type="button" class="context-menu-item" title="Pin sticky note" style="display:none">
+                <i data-lucide="pin" class="btn-icon-sm"></i>
+                <span>Pin</span>
+            </button>
+            <button id="btn-context-unpin" type="button" class="context-menu-item" title="Unpin sticky note" style="display:none">
+                <i data-lucide="pin-off" class="btn-icon-sm"></i>
+                <span>Unpin</span>
+            </button>
             <button id="btn-context-delete" type="button" class="context-menu-item context-menu-item-danger" title="Delete selected objects">
                 <i data-lucide="trash-2" class="btn-icon-sm"></i>
                 <span>Delete</span>

@@ -73,6 +73,23 @@ class Toolbar {
             el.addEventListener(evt, () => this._onBrushPropChange(id));
         });
 
+        const stickyProps = ['prop-sticky-opacity'];
+        stickyProps.forEach((id) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            const evt = el.type === 'color' ? 'change' : 'input';
+            el.addEventListener(evt, () => this._onStickyPropChange(id));
+        });
+
+        document.querySelectorAll('.sticky-color-btn').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const color = btn.dataset.stickyColor;
+                document.querySelectorAll('.sticky-color-btn').forEach((b) => b.classList.remove('active'));
+                btn.classList.add('active');
+                if (this.onPropertyChange) this.onPropertyChange('sticky', 'stickyColor', color);
+            });
+        });
+
         document.getElementById('prop-clear-brush-color').addEventListener('click', () => {
             if (this.onPropertyChange) this.onPropertyChange('brush', 'color', 'transparent');
         });
@@ -312,6 +329,19 @@ class Toolbar {
         }
     }
 
+    _onStickyPropChange(id) {
+        if (!this.onPropertyChange) return;
+        const el = document.getElementById(id);
+        const val = el.value;
+
+        switch (id) {
+            case 'prop-sticky-opacity':
+                this._syncChipGroup(id, val);
+                this.onPropertyChange('sticky', 'opacity', parseFloat(val) / 100);
+                break;
+        }
+    }
+
     _onImagePropChange(id) {
         if (!this.onPropertyChange) return;
         const el = document.getElementById(id);
@@ -375,6 +405,8 @@ class Toolbar {
             this._showTextProps(obj);
         } else if (obj.type === 'image') {
             this._showImageProps(obj);
+        } else if (obj._elementType === 'sticky') {
+            this._showStickyProps(obj);
         } else if (obj.type === 'rect' || obj.type === 'ellipse') {
             this._showShapeProps(obj);
         } else if (obj.type === 'line') {
@@ -470,6 +502,7 @@ class Toolbar {
         document.getElementById('props-text').style.display = 'none';
         document.getElementById('props-shape').style.display = 'none';
         document.getElementById('props-image').style.display = 'none';
+        document.getElementById('props-sticky').style.display = 'none';
         document.getElementById('props-page').style.display = 'none';
         document.getElementById('props-form').style.display = 'none';
     }
@@ -562,6 +595,19 @@ class Toolbar {
 
         const angle = Math.round(obj.angle || 0);
         this._setControlValue('prop-img-rotation', angle);
+    }
+
+    _showStickyProps(obj) {
+        const panel = document.getElementById('props-sticky');
+        panel.style.display = 'block';
+
+        const stickyColor = obj._stickyColor || '#fff9c4';
+        document.querySelectorAll('.sticky-color-btn').forEach((btn) => {
+            btn.classList.toggle('active', btn.dataset.stickyColor === stickyColor);
+        });
+
+        const opacity = Math.round((obj.opacity || 1) * 100);
+        this._setControlValue('prop-sticky-opacity', opacity);
     }
 
     _colorToHex(color) {

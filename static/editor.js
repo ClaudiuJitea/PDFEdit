@@ -15,6 +15,7 @@ class PDFEditor {
         this.onSelectionCleared = null;
         this.onCanvasModified = null;
         this.onContextMenuRequested = null;
+        this.onStickyDoubleClicked = null;
         this.arrowMode = false;
         this.deletedOriginals = [];
         this.brushSettings = {
@@ -68,6 +69,7 @@ class PDFEditor {
         this.canvas.on('mouse:down', (opt) => this._onMouseDown(opt));
         this.canvas.on('mouse:move', (opt) => this._onMouseMove(opt));
         this.canvas.on('mouse:up', (opt) => this._onMouseUp(opt));
+        this.canvas.on('mouse:dblclick', (opt) => this._onDoubleClick(opt));
 
         this._setupDrawingBrush();
     }
@@ -165,6 +167,7 @@ class PDFEditor {
             line: 'crosshair',
             freehand: 'crosshair',
             highlight: 'crosshair',
+            sticky: 'crosshair',
             redaction: 'crosshair',
             eraser: 'pointer',
         };
@@ -188,6 +191,10 @@ class PDFEditor {
         switch (this.currentTool) {
             case 'text':
                 this._createText(pointer.x, pointer.y);
+                this.isDrawing = false;
+                break;
+            case 'sticky':
+                this._createSticky(pointer.x, pointer.y);
                 this.isDrawing = false;
                 break;
             case 'image':
@@ -256,6 +263,13 @@ class PDFEditor {
         }
     }
 
+    _onDoubleClick(opt) {
+        const target = opt.target;
+        if (target && target._elementType === 'sticky' && this.onStickyDoubleClicked) {
+            this.onStickyDoubleClicked(target);
+        }
+    }
+
     _onRightClick(opt) {
         const target = opt.target || this.canvas.findTarget(opt.e);
 
@@ -284,6 +298,7 @@ class PDFEditor {
                 x: opt.e.clientX,
                 y: opt.e.clientY,
                 hasSelection: this.canvas.getActiveObjects().length > 0,
+                target: target,
             });
         }
     }
@@ -304,6 +319,87 @@ class PDFEditor {
         textbox.enterEditing();
         textbox.selectAll();
         if (this.onCanvasModified) this.onCanvasModified();
+    }
+
+    _createSticky(x, y) {
+        const color = '#fff9c4';
+        const { body, fold, width, height } = this._buildStickyIcon(color);
+
+        const group = new fabric.Group([body, fold], {
+            left: x - width / 2,
+            top: y - height / 2,
+            _elementType: 'sticky',
+            _stickyColor: color,
+            _stickyText: '',
+            _stickyPinned: false,
+            shadow: new fabric.Shadow({
+                color: 'rgba(0,0,0,0.2)',
+                blur: 4,
+                offsetX: 1,
+                offsetY: 2,
+            }),
+            hasControls: false,
+            lockScalingX: true,
+            lockScalingY: true,
+            lockRotation: true,
+        });
+
+        this.canvas.add(group);
+        this.canvas.setActiveObject(group);
+        if (this.onCanvasModified) this.onCanvasModified();
+    }
+
+    _buildStickyIcon(color) {
+        const darkColor = this._darkenStickyColor(color);
+        const w = 30, h = 36, fold = 10;
+
+        const bodyPath = [
+            'M 2 0',
+            `L ${w - fold} 0`,
+            `L ${w - fold} ${fold}`,
+            `L ${w} ${fold}`,
+            `L ${w} ${h - 2}`,
+            `Q ${w} ${h} ${w - 2} ${h}`,
+            `L 2 ${h}`,
+            `Q 0 ${h} 0 ${h - 2}`,
+            'L 0 2',
+            'Q 0 0 2 0',
+            'Z',
+        ].join(' ');
+
+        const body = new fabric.Path(bodyPath, {
+            fill: color,
+            stroke: darkColor,
+            strokeWidth: 1,
+        });
+
+        const foldPath = [
+            `M ${w - fold} 0`,
+            `L ${w} ${fold}`,
+            `L ${w - fold} ${fold}`,
+            'Z',
+        ].join(' ');
+
+        const foldShape = new fabric.Path(foldPath, {
+            fill: darkColor,
+            stroke: darkColor,
+            strokeWidth: 0.5,
+            opacity: 0.45,
+        });
+
+        return { body, fold: foldShape, width: w, height: h };
+    }
+
+    _darkenStickyColor(hex) {
+        if (!hex || !hex.startsWith('#') || hex.length < 7) return '#999999';
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        const factor = 0.7;
+        const dr = Math.round(r * factor);
+        const dg = Math.round(g * factor);
+        const db = Math.round(b * factor);
+        return '#' + [dr, dg, db].map(c => c.toString(16).padStart(2, '0')).join('');
     }
 
     _createRect(x, y) {
@@ -465,7 +561,7 @@ class PDFEditor {
     }
 
     loadElements(elements) {
-        const orderPriority = { 'rect': 0, 'ellipse': 0, 'path': 0, 'highlight': 0, 'redaction': 0, 'image': 1, 'text': 2 };
+        const orderPriority = { 'rect': 0, 'ellipse': 0, 'path': 0, 'highlight': 0, 'redaction': 0, 'sticky': 0, 'image': 1, 'text': 2 };
         const sorted = [...elements].sort((a, b) => {
             const pa = orderPriority[a.type] ?? 1;
             const pb = orderPriority[b.type] ?? 1;
@@ -585,6 +681,40 @@ class PDFEditor {
                     hl.set('opacity', elem.opacity);
                 }
                 this.canvas.add(hl);
+                break;
+            }
+            case 'sticky': {
+                const stickyColor = elem.stickyColor || '#fff9c4';
+                const { body, fold, width, height } = this._buildStickyIcon(stickyColor);
+                const isPinned = !!elem.stickyPinned;
+                const sticky = new fabric.Group([body, fold], {
+                    left: bbox[0],
+                    top: bbox[1],
+                    _elementType: 'sticky',
+                    _stickyColor: stickyColor,
+                    _stickyText: elem.text || '',
+                    _stickyPinned: isPinned,
+                    origin: elem.origin || undefined,
+                    originalPdfBbox: originPdfBbox,
+                    shadow: new fabric.Shadow({
+                        color: 'rgba(0,0,0,0.2)',
+                        blur: 4,
+                        offsetX: 1,
+                        offsetY: 2,
+                    }),
+                    selectable: true,
+                    evented: true,
+                    lockMovementX: isPinned,
+                    lockMovementY: isPinned,
+                    hasControls: false,
+                    lockScalingX: true,
+                    lockScalingY: true,
+                    lockRotation: true,
+                });
+                if (elem.opacity !== undefined && elem.opacity < 1) {
+                    sticky.set('opacity', elem.opacity);
+                }
+                this.canvas.add(sticky);
                 break;
             }
             case 'path': {
@@ -779,7 +909,22 @@ class PDFEditor {
                     ? obj.path.map((seg) => seg.join(' ')).join(' ')
                     : '';
             } else if (obj.type === 'group') {
-                return null;
+                if (obj._elementType === 'sticky') {
+                    base.type = 'sticky';
+                    const bounds = obj.getBoundingRect();
+                    base.bbox = [bounds.left, bounds.top, bounds.left + bounds.width, bounds.top + bounds.height];
+                    base.pdf_bbox = [bounds.left / scale, bounds.top / scale, (bounds.left + bounds.width) / scale, (bounds.top + bounds.height) / scale];
+                    base.text = obj._stickyText || '';
+                    base.stickyColor = obj._stickyColor || '#fff9c4';
+                    base.stickyPinned = !!obj._stickyPinned;
+                    base.opacity = obj.opacity;
+                    if (obj.origin === 'pdf') {
+                        base.origin = 'pdf';
+                        base.originalPdfBbox = obj.originalPdfBbox || null;
+                    }
+                } else {
+                    return null;
+                }
             }
 
             return base;
@@ -841,7 +986,7 @@ class PDFEditor {
     }
 
     toJSON() {
-        return this.canvas.toJSON(['_elementType', '_isRedaction', 'origin', 'originalPdfBbox', '_modified']);
+        return this.canvas.toJSON(['_elementType', '_isRedaction', 'origin', 'originalPdfBbox', '_modified', '_stickyColor', '_stickyText', '_stickyPinned']);
     }
 
     loadFromJSON(json) {
