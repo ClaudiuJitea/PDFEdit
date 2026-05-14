@@ -28,9 +28,9 @@
                     <span class="brand-text">PDFEdit</span>
                 </div>
                 <div class="top-bar-actions">
-                    <button id="btn-upload" class="top-btn" title="Upload PDF">
+                    <button id="btn-upload" class="top-btn" title="Open PDF (Ctrl+O)">
                         <i data-lucide="upload" class="btn-icon"></i>
-                        <span>Upload</span>
+                        <span>Open</span>
                     </button>
                     <button id="btn-new" class="top-btn" title="New blank PDF">
                         <i data-lucide="file-plus" class="btn-icon"></i>
@@ -173,6 +173,13 @@
                         </div>
                         <div id="form-layer" class="form-layer"></div>
                         <canvas id="fabric-canvas"></canvas>
+                        <div id="drop-overlay" class="drop-overlay" style="display:none">
+                            <div class="drop-overlay-inner">
+                                <i data-lucide="upload" class="drop-overlay-icon"></i>
+                                <h2>Drop PDF to open</h2>
+                                <p>Or click <strong>Open</strong> in the top bar</p>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Page Navigation Bar -->
@@ -211,6 +218,61 @@
                 <div id="props-empty" class="props-empty">
                     <i data-lucide="mouse-pointer-click" class="props-empty-icon"></i>
                     <p>Select an element to edit its properties</p>
+                </div>
+
+                <div id="props-brush" class="props-section" style="display:none">
+                    <h3 class="props-title">Brush Settings</h3>
+                    <div class="prop-row">
+                        <div class="prop-group flex-1">
+                            <label class="prop-label">Stroke Color</label>
+                            <div class="color-with-clear">
+                                <input type="color" id="prop-brush-color" class="prop-color" value="#01696f">
+                                <button id="prop-clear-brush-color" class="color-clear-btn" title="No stroke">✕</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Stroke Width</label>
+                        <div class="prop-control-stack">
+                            <div class="prop-value-box compact">
+                                <button class="prop-step-btn" type="button" data-step-target="prop-brush-width" data-step="-1" title="Decrease stroke width">-</button>
+                                <input type="number" id="prop-brush-width" class="prop-input prop-input-compact" min="1" max="20" step="1" value="2">
+                                <span class="prop-unit">px</span>
+                                <button class="prop-step-btn" type="button" data-step-target="prop-brush-width" data-step="1" title="Increase stroke width">+</button>
+                            </div>
+                            <div class="prop-chip-group prop-chip-group-stroke" data-chip-target="prop-brush-width">
+                                <button class="prop-chip prop-chip-stroke" type="button" data-value="1"><span class="stroke-preview stroke-preview-1"></span><span>Thin</span></button>
+                                <button class="prop-chip prop-chip-stroke" type="button" data-value="2"><span class="stroke-preview stroke-preview-2"></span><span>2 px</span></button>
+                                <button class="prop-chip prop-chip-stroke" type="button" data-value="4"><span class="stroke-preview stroke-preview-4"></span><span>4 px</span></button>
+                                <button class="prop-chip prop-chip-stroke" type="button" data-value="8"><span class="stroke-preview stroke-preview-8"></span><span>Bold</span></button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Opacity</label>
+                        <div class="prop-control-stack">
+                            <div class="prop-value-box compact">
+                                <button class="prop-step-btn" type="button" data-step-target="prop-brush-opacity" data-step="-10" title="Decrease opacity by 10">-10</button>
+                                <input type="number" id="prop-brush-opacity" class="prop-input prop-input-compact" min="0" max="100" step="5" value="100">
+                                <span class="prop-unit">%</span>
+                                <button class="prop-step-btn" type="button" data-step-target="prop-brush-opacity" data-step="10" title="Increase opacity by 10">+10</button>
+                            </div>
+                            <div class="prop-chip-group prop-chip-group-opacity" data-chip-target="prop-brush-opacity">
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="25"><span class="opacity-swatch opacity-25"></span><span>25%</span></button>
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="50"><span class="opacity-swatch opacity-50"></span><span>50%</span></button>
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="75"><span class="opacity-swatch opacity-75"></span><span>75%</span></button>
+                                <button class="prop-chip prop-chip-opacity" type="button" data-value="100"><span class="opacity-swatch opacity-100"></span><span>100%</span></button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Line Style</label>
+                        <div class="prop-chip-group prop-chip-group-linestyle" data-chip-target="prop-brush-linestyle">
+                            <button class="prop-chip prop-chip-linestyle active" type="button" data-value="solid"><span class="linestyle-preview linestyle-preview-solid"></span><span>Solid</span></button>
+                            <button class="prop-chip prop-chip-linestyle" type="button" data-value="dashed"><span class="linestyle-preview linestyle-preview-dashed"></span><span>Dashed</span></button>
+                            <button class="prop-chip prop-chip-linestyle" type="button" data-value="dotted"><span class="linestyle-preview linestyle-preview-dotted"></span><span>Dotted</span></button>
+                        </div>
+                    </div>
                 </div>
 
                 <div id="props-text" class="props-section" style="display:none">

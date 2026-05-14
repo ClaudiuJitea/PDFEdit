@@ -66,6 +66,7 @@ class App {
             formLayer: document.getElementById('form-layer'),
             canvasLoading: document.getElementById('canvas-loading'),
             canvasError: document.getElementById('canvas-error'),
+            dropOverlay: document.getElementById('drop-overlay'),
             fileInput: document.getElementById('file-input'),
             imageInput: document.getElementById('image-input'),
             pageInput: document.getElementById('page-input'),
@@ -199,6 +200,10 @@ class App {
                     case 's':
                         e.preventDefault();
                         this._saveCurrentPage();
+                        return;
+                    case 'o':
+                        e.preventDefault();
+                        this.els.fileInput.click();
                         return;
                 }
             }
@@ -346,12 +351,33 @@ class App {
             }
         });
 
-        document.body.addEventListener('dragover', (e) => e.preventDefault());
+        document.body.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            if (!e.dataTransfer || !this.sessionId) return;
+            const hasPdf = Array.from(e.dataTransfer.types).some(
+                (t) => t === 'application/pdf' || t === 'Files'
+            );
+            if (hasPdf && this.els.editorContainer.style.display !== 'none') {
+                this.els.dropOverlay.style.display = 'flex';
+            }
+        });
+
+        document.body.addEventListener('dragleave', (e) => {
+            if (e.relatedTarget === null) {
+                this.els.dropOverlay.style.display = 'none';
+            }
+        });
+
         document.body.addEventListener('drop', (e) => {
             e.preventDefault();
+            this.els.dropOverlay.style.display = 'none';
             const files = e.dataTransfer?.files;
-            if (files && files.length > 0 && files[0].type === 'application/pdf') {
-                this._uploadFile(files[0]);
+            if (files && files.length > 0) {
+                if (files[0].type === 'application/pdf') {
+                    this._uploadFile(files[0]);
+                } else {
+                    this._showToast('Please drop a PDF file', 'error');
+                }
             }
         });
     }
@@ -814,6 +840,11 @@ class App {
             return;
         }
 
+        if (this.toolbar.activeTool === 'freehand') {
+            this.toolbar.showBrushProperties(this.editor.getBrushSettings());
+            return;
+        }
+
         this.toolbar.showPageProperties(
             this.pageSizes[this.currentPage]?.width || 595,
             this.pageSizes[this.currentPage]?.height || 842
@@ -906,6 +937,11 @@ class App {
     }
 
     _onPropertyChange(type, prop, value) {
+        if (type === 'brush') {
+            this.editor.setBrushSetting(prop, value);
+            return;
+        }
+
         const obj = this.editor.getActiveObject();
         if (!obj) return;
 

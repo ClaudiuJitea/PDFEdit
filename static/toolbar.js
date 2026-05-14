@@ -65,6 +65,27 @@ class Toolbar {
             if (this.onPropertyChange) this.onPropertyChange('shape', 'stroke', 'transparent');
         });
 
+        const brushProps = ['prop-brush-color', 'prop-brush-width', 'prop-brush-opacity'];
+        brushProps.forEach((id) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            const evt = el.tagName === 'SELECT' || el.type === 'color' ? 'change' : 'input';
+            el.addEventListener(evt, () => this._onBrushPropChange(id));
+        });
+
+        document.getElementById('prop-clear-brush-color').addEventListener('click', () => {
+            if (this.onPropertyChange) this.onPropertyChange('brush', 'color', 'transparent');
+        });
+
+        document.querySelectorAll('.prop-chip-linestyle').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const value = btn.dataset.value;
+                document.querySelectorAll('.prop-chip-linestyle').forEach((b) => b.classList.remove('active'));
+                btn.classList.add('active');
+                if (this.onPropertyChange) this.onPropertyChange('brush', 'lineStyle', value);
+            });
+        });
+
         const imgProps = ['prop-img-width', 'prop-img-height', 'prop-img-opacity', 'prop-img-rotation'];
         imgProps.forEach((id) => {
             const el = document.getElementById(id);
@@ -271,6 +292,26 @@ class Toolbar {
         }
     }
 
+    _onBrushPropChange(id) {
+        if (!this.onPropertyChange) return;
+        const el = document.getElementById(id);
+        const val = el.value;
+
+        switch (id) {
+            case 'prop-brush-color':
+                this.onPropertyChange('brush', 'color', val);
+                break;
+            case 'prop-brush-width':
+                this._syncChipGroup(id, val);
+                this.onPropertyChange('brush', 'width', parseFloat(val));
+                break;
+            case 'prop-brush-opacity':
+                this._syncChipGroup(id, val);
+                this.onPropertyChange('brush', 'opacity', parseFloat(val) / 100);
+                break;
+        }
+    }
+
     _onImagePropChange(id) {
         if (!this.onPropertyChange) return;
         const el = document.getElementById(id);
@@ -425,11 +466,33 @@ class Toolbar {
 
     _hideAllProps() {
         document.getElementById('props-empty').style.display = 'none';
+        document.getElementById('props-brush').style.display = 'none';
         document.getElementById('props-text').style.display = 'none';
         document.getElementById('props-shape').style.display = 'none';
         document.getElementById('props-image').style.display = 'none';
         document.getElementById('props-page').style.display = 'none';
         document.getElementById('props-form').style.display = 'none';
+    }
+
+    showBrushProperties(settings) {
+        this._hideAllProps();
+        const panel = document.getElementById('props-brush');
+        panel.style.display = 'block';
+
+        const strokeHex = this._colorToHex(settings.color || '#01696f');
+        if (settings.color && settings.color !== 'transparent') {
+            document.getElementById('prop-brush-color').value = strokeHex;
+        }
+
+        this._setControlValue('prop-brush-width', settings.width || 2);
+
+        const opacity = Math.round((settings.opacity !== undefined ? settings.opacity : 1) * 100);
+        this._setControlValue('prop-brush-opacity', opacity);
+
+        const lineStyle = settings.lineStyle || 'solid';
+        document.querySelectorAll('.prop-chip-linestyle').forEach((btn) => {
+            btn.classList.toggle('active', btn.dataset.value === lineStyle);
+        });
     }
 
     _showTextProps(obj) {

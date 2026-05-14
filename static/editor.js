@@ -17,6 +17,12 @@ class PDFEditor {
         this.onContextMenuRequested = null;
         this.arrowMode = false;
         this.deletedOriginals = [];
+        this.brushSettings = {
+            color: '#01696f',
+            width: 2,
+            opacity: 1,
+            lineStyle: 'solid',
+        };
     }
 
     init(canvasEl, width, height) {
@@ -68,9 +74,26 @@ class PDFEditor {
 
     _setupDrawingBrush() {
         this.canvas.freeDrawingBrush = new fabric.PencilBrush(this.canvas);
-        this.canvas.freeDrawingBrush.width = 2;
-        this.canvas.freeDrawingBrush.color = '#01696f';
+        this._applyBrushSettings();
         this.canvas.isDrawingMode = false;
+    }
+
+    _applyBrushSettings() {
+        const brush = this.canvas.freeDrawingBrush;
+        if (!brush) return;
+        brush.width = this.brushSettings.width;
+        brush.color = this.brushSettings.color;
+        const dashArray = this._getBrushDashArray();
+        brush.strokeDashArray = dashArray;
+    }
+
+    _getBrushDashArray() {
+        const w = Math.max(1, this.brushSettings.width);
+        switch (this.brushSettings.lineStyle) {
+            case 'dashed': return [w * 3, w * 2];
+            case 'dotted': return [w * 0.8, w * 1.5];
+            default: return null;
+        }
     }
 
     setBackground(imageUrl) {
@@ -116,8 +139,7 @@ class PDFEditor {
             this.canvas.renderAll();
         } else if (tool === 'freehand') {
             this.canvas.isDrawingMode = true;
-            this.canvas.freeDrawingBrush.width = 2;
-            this.canvas.freeDrawingBrush.color = '#01696f';
+            this._applyBrushSettings();
         } else if (tool === 'eraser') {
             this._deleteSelected();
             return;
@@ -621,12 +643,38 @@ class PDFEditor {
                             originalPdfBbox: originPdfBbox,
                             selectable: true,
                         });
+                        if (elem.strokeDashArray) {
+                            path.set('strokeDashArray', elem.strokeDashArray);
+                        }
                         this.canvas.add(path);
                     }
                 }
                 break;
             }
         }
+    }
+
+    setBrushSetting(prop, value) {
+        this.brushSettings[prop] = value;
+        if (prop === 'width' || prop === 'lineStyle') {
+            const dashArray = this._getBrushDashArray();
+            if (this.canvas.freeDrawingBrush) {
+                this.canvas.freeDrawingBrush.strokeDashArray = dashArray;
+            }
+        }
+        if (this.canvas.isDrawingMode && this.canvas.freeDrawingBrush) {
+            if (prop === 'width') {
+                this.canvas.freeDrawingBrush.width = value;
+            } else if (prop === 'color') {
+                this.canvas.freeDrawingBrush.color = value;
+            } else if (prop === 'opacity') {
+                this.canvas.freeDrawingBrush.opacity = value;
+            }
+        }
+    }
+
+    getBrushSettings() {
+        return { ...this.brushSettings };
     }
 
     getObjects() {
@@ -724,6 +772,9 @@ class PDFEditor {
                 base.stroke = typeof obj.stroke === 'string' ? obj.stroke : 'transparent';
                 base.strokeWidth = obj.strokeWidth || 2;
                 base.opacity = obj.opacity;
+                if (obj.strokeDashArray) {
+                    base.strokeDashArray = obj.strokeDashArray;
+                }
                 base.path = obj.path
                     ? obj.path.map((seg) => seg.join(' ')).join(' ')
                     : '';
