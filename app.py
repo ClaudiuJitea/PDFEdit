@@ -1570,6 +1570,39 @@ def save_page(session_id, page_num):
                 width=stroke_w,
             )
             shape_obj.commit()
+        elif etype == "star":
+            import math
+            cx = (rect.x0 + rect.x1) / 2
+            cy = (rect.y0 + rect.y1) / 2
+            rx = (rect.x1 - rect.x0) / 2
+            ry = (rect.y1 - rect.y0) / 2
+            
+            points = []
+            spikes = 5
+            rot = (math.pi / 2) * 3
+            step = math.pi / spikes
+            
+            for i in range(spikes):
+                x = cx + math.cos(rot) * rx
+                y = cy + math.sin(rot) * ry
+                points.append(fitz.Point(x, y))
+                rot += step
+                
+                x = cx + math.cos(rot) * (rx * 0.4)
+                y = cy + math.sin(rot) * (ry * 0.4)
+                points.append(fitz.Point(x, y))
+                rot += step
+            
+            points.append(points[0])
+            
+            shape_obj = page.new_shape()
+            shape_obj.draw_polyline(points)
+            shape_obj.finish(
+                color=stroke_color,
+                fill=fill_color,
+                width=stroke_w,
+            )
+            shape_obj.commit()
         elif etype == "line":
             shape_obj = page.new_shape()
             p1 = fitz.Point(rect.x0, rect.y0)

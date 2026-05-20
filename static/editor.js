@@ -1,3 +1,49 @@
+// Override fabric.Line._render to draw arrows when in arrowMode
+if (typeof fabric !== 'undefined' && fabric.Line) {
+    const originalLineRender = fabric.Line.prototype._render;
+    fabric.Line.prototype._render = function(ctx) {
+        originalLineRender.call(this, ctx);
+        if (this._elementType === 'arrow' || this.arrow) {
+            ctx.save();
+            const p = this.calcLinePoints();
+            const dx = p.x2 - p.x1;
+            const dy = p.y2 - p.y1;
+            const length = Math.sqrt(dx * dx + dy * dy) || 0.001;
+            
+            // Normalize direction vector
+            const ux = dx / length;
+            const uy = dy / length;
+            
+            // Arrowhead size (proportional to strokeWidth)
+            const arrowLength = Math.max(12, this.strokeWidth * 4);
+            const arrowWidth = arrowLength * 0.5;
+            
+            // Calculate the two base vertices of the arrowhead triangle
+            const ax = p.x2 - ux * arrowLength - uy * arrowWidth;
+            const ay = p.y2 - uy * arrowLength + ux * arrowWidth;
+            const bx = p.x2 - ux * arrowLength + uy * arrowWidth;
+            const by = p.y2 - uy * arrowLength - ux * arrowWidth;
+            
+            ctx.beginPath();
+            ctx.moveTo(p.x2, p.y2);
+            ctx.lineTo(ax, ay);
+            ctx.lineTo(bx, by);
+            ctx.closePath();
+            
+            // Fill the arrowhead with stroke color
+            ctx.fillStyle = this.stroke;
+            ctx.fill();
+            
+            // Stroke the arrowhead to ensure clean edges
+            ctx.strokeStyle = this.stroke;
+            ctx.lineWidth = this.strokeWidth;
+            ctx.stroke();
+            
+            ctx.restore();
+        }
+    };
+}
+
 class PDFEditor {
     constructor() {
         this.canvas = null;
@@ -165,6 +211,7 @@ class PDFEditor {
             rect: 'crosshair',
             ellipse: 'crosshair',
             line: 'crosshair',
+            star: 'crosshair',
             freehand: 'crosshair',
             highlight: 'crosshair',
             sticky: 'crosshair',
@@ -209,6 +256,9 @@ class PDFEditor {
             case 'line':
                 this.drawingShape = this._createLine(pointer.x, pointer.y);
                 break;
+            case 'star':
+                this.drawingShape = this._createStar(pointer.x, pointer.y);
+                break;
             case 'highlight':
                 this.drawingShape = this._createHighlight(pointer.x, pointer.y);
                 break;
@@ -241,6 +291,20 @@ class PDFEditor {
             this.canvas.renderAll();
         } else if (this.currentTool === 'line') {
             this.drawingShape.set({ x2: pointer.x, y2: pointer.y });
+            this.canvas.renderAll();
+        } else if (this.currentTool === 'star') {
+            const rx = Math.abs(dx);
+            const ry = Math.abs(dy);
+            const left = dx > 0 ? this.startX : this.startX + dx;
+            const top = dy > 0 ? this.startY : this.startY + dy;
+            
+            this.drawingShape.set({
+                left: left,
+                top: top,
+                scaleX: rx / 200,
+                scaleY: ry / 200
+            });
+            this.drawingShape.setCoords();
             this.canvas.renderAll();
         }
     }
@@ -444,6 +508,44 @@ class PDFEditor {
         });
         this.canvas.add(line);
         return line;
+    }
+
+    _getStarPoints(cx, cy, rx, ry, spikes = 5, rotation = 0) {
+        const points = [];
+        let rot = (Math.PI / 2) * 3 + rotation;
+        const step = Math.PI / spikes;
+
+        for (let i = 0; i < spikes; i++) {
+            let x = cx + Math.cos(rot) * rx;
+            let y = cy + Math.sin(rot) * ry;
+            points.push({ x: x, y: y });
+            rot += step;
+
+            x = cx + Math.cos(rot) * (rx * 0.4);
+            y = cy + Math.sin(rot) * (ry * 0.4);
+            points.push({ x: x, y: y });
+            rot += step;
+        }
+        return points;
+    }
+
+    _createStar(x, y) {
+        const points = this._getStarPoints(100, 100, 100, 100);
+        const star = new fabric.Polygon(points, {
+            left: x,
+            top: y,
+            width: 200,
+            height: 200,
+            scaleX: 0,
+            scaleY: 0,
+            fill: 'transparent',
+            stroke: '#01696f',
+            strokeWidth: 2,
+            strokeUniform: true,
+            _elementType: 'star',
+        });
+        this.canvas.add(star);
+        return star;
     }
 
     _createHighlight(x, y) {
@@ -664,6 +766,29 @@ class PDFEditor {
                 this.canvas.add(ellipse);
                 break;
             }
+            case 'star': {
+                const points = this._getStarPoints(100, 100, 100, 100);
+                const star = new fabric.Polygon(points, {
+                    left: bbox[0],
+                    top: bbox[1],
+                    width: bbox[2] - bbox[0],
+                    height: bbox[3] - bbox[1],
+                    scaleX: (bbox[2] - bbox[0]) / 200,
+                    scaleY: (bbox[3] - bbox[1]) / 200,
+                    fill: elem.fill || 'transparent',
+                    stroke: elem.stroke || 'transparent',
+                    strokeWidth: elem.strokeWidth || 0,
+                    strokeUniform: true,
+                    _elementType: 'star',
+                    origin: 'pdf',
+                    originalPdfBbox: originPdfBbox,
+                });
+                if (elem.opacity !== undefined && elem.opacity < 1) {
+                    star.set('opacity', elem.opacity);
+                }
+                this.canvas.add(star);
+                break;
+            }
             case 'highlight': {
                 const hl = new fabric.Rect({
                     left: bbox[0],
@@ -872,6 +997,18 @@ class PDFEditor {
                 const top = obj.top || 0;
                 const w = (obj.rx || 25) * 2 * (obj.scaleX || 1);
                 const h = (obj.ry || 25) * 2 * (obj.scaleY || 1);
+                base.bbox = [left, top, left + w, top + h];
+                base.pdf_bbox = [left / scale, top / scale, (left + w) / scale, (top + h) / scale];
+                base.fill = typeof obj.fill === 'string' ? obj.fill : 'transparent';
+                base.stroke = typeof obj.stroke === 'string' ? obj.stroke : 'transparent';
+                base.strokeWidth = obj.strokeWidth || 0;
+                base.opacity = obj.opacity;
+            } else if (obj.type === 'polygon' || obj._elementType === 'star') {
+                base.type = 'star';
+                const left = obj.left || 0;
+                const top = obj.top || 0;
+                const w = (obj.width || 200) * (obj.scaleX || 1);
+                const h = (obj.height || 200) * (obj.scaleY || 1);
                 base.bbox = [left, top, left + w, top + h];
                 base.pdf_bbox = [left / scale, top / scale, (left + w) / scale, (top + h) / scale];
                 base.fill = typeof obj.fill === 'string' ? obj.fill : 'transparent';

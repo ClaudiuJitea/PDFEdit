@@ -199,6 +199,46 @@ class App {
 
         const modalBackdrop = this.els.newPdfModal.querySelector('.modal-backdrop');
         modalBackdrop.addEventListener('click', () => this._hideNewPdfModal());
+        this._initShapeDropdown();
+    }
+
+    _initShapeDropdown() {
+        const shapeBtn = document.getElementById('btn-shape-main');
+        const menu = document.getElementById('shape-dropdown-menu');
+        if (!shapeBtn || !menu) return;
+
+        // Selecting a shape from the dropdown menu
+        const menuItems = menu.querySelectorAll('.menu-item');
+        menuItems.forEach(item => {
+            item.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const shape = item.dataset.shape;
+                
+                // Update main button data-tool
+                shapeBtn.dataset.tool = shape === 'arrow' ? 'line' : shape;
+                
+                // Adjust Arrow/Line mode settings
+                if (shape === 'arrow') {
+                    this.editor.arrowMode = true;
+                } else if (shape === 'line') {
+                    this.editor.arrowMode = false;
+                }
+                
+                // Update active state in selector menu
+                menuItems.forEach(mi => mi.classList.toggle('active', mi === item));
+                
+                // Auto-activate selected shape tool
+                this._onToolChange(shapeBtn.dataset.tool);
+                
+                // Hide menu
+                menu.style.display = 'none';
+            });
+        });
+
+        // Close menu if user clicks anywhere else
+        document.addEventListener('click', () => {
+            menu.style.display = 'none';
+        });
     }
 
     _bindKeyboard() {
@@ -849,6 +889,14 @@ class App {
     }
 
     _onToolChange(tool) {
+        if (tool === 'signature') {
+            this.toolbar.setActiveTool('signature');
+            this.editor.setTool('select');
+            this.formLayer.setInteractive(false);
+            this._showContextProperties();
+            return;
+        }
+
         if (tool === 'image') {
             this.formLayer.setInteractive(false);
             this.els.imageInput.click();
@@ -875,6 +923,26 @@ class App {
         this.editor.setTool(tool);
         this.formLayer.setInteractive(false);
         this._showContextProperties();
+
+        // Sync shape tool dropdown active item if tool is rect, ellipse, line, or star
+        if (['rect', 'ellipse', 'line', 'star'].includes(tool)) {
+            const shapeBtn = document.getElementById('btn-shape-main');
+            const menu = document.getElementById('shape-dropdown-menu');
+            if (shapeBtn && menu) {
+                let shapeName = tool;
+                if (tool === 'line') {
+                    shapeName = this.editor.arrowMode ? 'arrow' : 'line';
+                }
+                
+                shapeBtn.dataset.tool = tool;
+
+                const menuItems = menu.querySelectorAll('.menu-item');
+                menuItems.forEach(item => {
+                    const isActive = item.dataset.shape === shapeName;
+                    item.classList.toggle('active', isActive);
+                });
+            }
+        }
     }
 
     _syncCurrentPageFormsState() {
@@ -887,6 +955,13 @@ class App {
     }
 
     _showContextProperties() {
+        if (this.toolbar.activeTool === 'signature') {
+            this.toolbar._hideAllProps();
+            const sigProps = document.getElementById('props-signature');
+            if (sigProps) sigProps.style.display = 'block';
+            return;
+        }
+
         if (this.toolbar.activeTool === 'forms') {
             this._showFormProperties();
             return;
@@ -1679,4 +1754,5 @@ class App {
 }
 
 const app = new App();
+window.app = app;
 document.addEventListener('DOMContentLoaded', () => app.init());

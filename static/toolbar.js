@@ -407,7 +407,7 @@ class Toolbar {
             this._showImageProps(obj);
         } else if (obj._elementType === 'sticky') {
             this._showStickyProps(obj);
-        } else if (obj.type === 'rect' || obj.type === 'ellipse') {
+        } else if (obj.type === 'rect' || obj.type === 'ellipse' || obj.type === 'polygon' || obj._elementType === 'star') {
             this._showShapeProps(obj);
         } else if (obj.type === 'line') {
             this._showShapeProps(obj);
@@ -505,6 +505,8 @@ class Toolbar {
         document.getElementById('props-sticky').style.display = 'none';
         document.getElementById('props-page').style.display = 'none';
         document.getElementById('props-form').style.display = 'none';
+        const sigProps = document.getElementById('props-signature');
+        if (sigProps) sigProps.style.display = 'none';
     }
 
     showBrushProperties(settings) {

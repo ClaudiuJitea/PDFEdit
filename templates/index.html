@@ -6,11 +6,19 @@
     <title>PDFEdit — PDF Editor</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Great+Vibes&family=Alex+Brush&family=Satisfy&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=1.0.3">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <style>
+    .sig-canvas-controls .btn-sm {
+        width: auto;
+        padding: 5px 14px;
+        font-size: 12px;
+        border-radius: var(--radius-sm);
+    }
+    </style>
 </head>
 <body>
     <div id="app">
@@ -82,16 +90,36 @@
                     <button class="tool-btn" data-tool="image" data-shortcut="I" title="Add Image (I)">
                         <i data-lucide="image-plus"></i>
                     </button>
-                    <div class="toolbar-separator"></div>
-                    <button class="tool-btn" data-tool="rect" data-shortcut="R" title="Rectangle (R)">
-                        <i data-lucide="square"></i>
-                    </button>
-                    <button class="tool-btn" data-tool="ellipse" data-shortcut="E" title="Ellipse (E)">
-                        <i data-lucide="circle"></i>
-                    </button>
-                    <button class="tool-btn" data-tool="line" data-shortcut="L" title="Line / Arrow (L)">
-                        <i data-lucide="pen-line"></i>
-                    </button>
+                    <!-- Shapes Toolbox -->
+                    <div class="tool-dropdown-container" id="shape-tool-container">
+                        <button class="tool-btn" data-tool="rect" data-shortcut="U" title="Shapes Tool (U)" id="btn-shape-main">
+                            <i data-lucide="shapes" id="shape-tool-icon"></i>
+                            <span class="dropdown-mini-arrow">▾</span>
+                        </button>
+                        
+                        <div class="tool-dropdown-menu" id="shape-dropdown-menu" style="display:none">
+                            <button class="menu-item active" data-shape="rect" type="button" title="Rectangle (R)">
+                                <i data-lucide="square"></i>
+                                <span>Rectangle</span>
+                            </button>
+                            <button class="menu-item" data-shape="ellipse" type="button" title="Ellipse (E)">
+                                <i data-lucide="circle"></i>
+                                <span>Ellipse</span>
+                            </button>
+                            <button class="menu-item" data-shape="line" type="button" title="Line (L)">
+                                <i data-lucide="minus"></i>
+                                <span>Line</span>
+                            </button>
+                            <button class="menu-item" data-shape="arrow" type="button" title="Arrow">
+                                <i data-lucide="trending-up"></i>
+                                <span>Arrow</span>
+                            </button>
+                            <button class="menu-item" data-shape="star" type="button" title="Star">
+                                <i data-lucide="star"></i>
+                                <span>Star</span>
+                            </button>
+                        </div>
+                    </div>
                     <button class="tool-btn" data-tool="freehand" data-shortcut="F" title="Freehand Draw (F)">
                         <i data-lucide="pencil-line"></i>
                     </button>
@@ -104,6 +132,9 @@
                     </button>
                     <button class="tool-btn" data-tool="redaction" data-shortcut="X" title="Redaction / Blackout (X)">
                         <i data-lucide="shield"></i>
+                    </button>
+                    <button class="tool-btn" data-tool="signature" data-shortcut="S" title="Signature (S)">
+                        <i data-lucide="pen-tool"></i>
                     </button>
                     <div class="toolbar-separator"></div>
                     <button class="tool-btn" data-tool="eraser" data-shortcut="Del" title="Delete Selected (Del)">
@@ -563,6 +594,37 @@
                     </div>
                 </div>
 
+                <div id="props-signature" class="props-section" style="display:none">
+                    <h3 class="props-title">Signature Gallery</h3>
+                    <p class="props-description" style="font-size: 12px; color: var(--color-text-muted); margin-bottom: 12px; line-height: 1.4;">
+                        Select a signature or initial to place it on the document, or create a new one.
+                    </p>
+                    
+                    <div class="sig-gallery-section">
+                        <div class="sig-gallery-header">
+                            <span class="sig-gallery-label">My Signatures</span>
+                            <button id="btn-add-sig-gallery" class="sig-add-link-btn" type="button" title="Add new signature">
+                                <i data-lucide="plus" class="btn-icon-sm"></i> Add
+                            </button>
+                        </div>
+                        <div id="signature-list" class="signature-list-gallery">
+                            <div class="signature-empty-item">No signatures saved</div>
+                        </div>
+                    </div>
+                    
+                    <div class="sig-gallery-section" style="margin-top: 16px;">
+                        <div class="sig-gallery-header">
+                            <span class="sig-gallery-label">My Initials</span>
+                            <button id="btn-add-init-gallery" class="sig-add-link-btn" type="button" title="Add new initials">
+                                <i data-lucide="plus" class="btn-icon-sm"></i> Add
+                            </button>
+                        </div>
+                        <div id="initials-list" class="signature-list-gallery">
+                            <div class="signature-empty-item">No initials saved</div>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="props-page" class="props-section" style="display:none">
                     <h3 class="props-title">Page Properties</h3>
                     <div class="prop-row">
@@ -716,6 +778,84 @@
             </div>
         </div>
 
+        <!-- Signature Dialog Modal -->
+        <div id="signature-modal" class="modal" style="display:none">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content" style="max-width: 600px; width: 90%;">
+                <h2 class="modal-title" id="sig-modal-title">Create Signature</h2>
+                
+                <!-- Tab headers -->
+                <div class="sig-tabs">
+                    <button class="sig-tab active" type="button" data-tab="sig-draw">Draw</button>
+                    <button class="sig-tab" type="button" data-tab="sig-type">Type</button>
+                    <button class="sig-tab" type="button" data-tab="sig-upload">Upload</button>
+                </div>
+                
+                <!-- Tab body: Draw -->
+                <div id="tab-sig-draw" class="sig-tab-content">
+                    <div class="canvas-sig-wrapper">
+                        <canvas id="signature-pad-canvas" width="540" height="200"></canvas>
+                    </div>
+                    <div class="sig-canvas-controls">
+                        <div class="sig-color-selectors">
+                            <button class="sig-color-btn sig-color-picker-wrapper" id="sig-color-picker-wrapper" type="button" title="Custom color picker">
+                                <i data-lucide="pipette" class="sig-color-picker-icon"></i>
+                                <input type="color" id="sig-color-picker" value="#000000">
+                            </button>
+                        </div>
+                        <button id="btn-clear-sig-pad" class="secondary-btn btn-sm" type="button">Clear Pad</button>
+                    </div>
+                </div>
+                
+                <!-- Tab body: Type -->
+                <div id="tab-sig-type" class="sig-tab-content" style="display:none">
+                    <div class="prop-group">
+                        <label class="prop-label">Type your name</label>
+                        <input type="text" id="sig-type-input" class="prop-input" placeholder="Your Name" style="font-size:16px;">
+                    </div>
+                    <div class="sig-font-previews">
+                        <div class="sig-font-row active" data-font="Great Vibes">
+                            <span class="sig-font-preview-text great-vibes-font">Your Name</span>
+                            <span class="sig-font-name">Elegant (Great Vibes)</span>
+                        </div>
+                        <div class="sig-font-row" data-font="Alex Brush">
+                            <span class="sig-font-preview-text alex-brush-font">Your Name</span>
+                            <span class="sig-font-name">Classic (Alex Brush)</span>
+                        </div>
+                        <div class="sig-font-row" data-font="Satisfy">
+                            <span class="sig-font-preview-text satisfy-font">Your Name</span>
+                            <span class="sig-font-name">Modern (Satisfy)</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Tab body: Upload -->
+                <div id="tab-sig-upload" class="sig-tab-content" style="display:none">
+                    <div class="sig-upload-dropzone" id="sig-upload-dropzone">
+                        <i data-lucide="image" class="sig-upload-icon"></i>
+                        <p>Drag and drop a PNG/JPEG image of your signature, or click to upload</p>
+                        <button class="upload-btn secondary" type="button" id="btn-browse-sig-img" style="margin-top:8px;">Browse File</button>
+                        <input type="file" id="sig-image-file" accept="image/png,image/jpeg" hidden>
+                    </div>
+                    <div class="sig-upload-preview-container" id="sig-upload-preview-container" style="display:none;">
+                        <img id="sig-upload-preview-img" src="" alt="Signature Preview">
+                        <div class="sig-upload-options" style="margin-top: 10px; display: flex; gap: 12px; align-items: center;">
+                            <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
+                                <input type="checkbox" id="sig-upload-remove-bg" checked>
+                                <span>Remove white background</span>
+                            </label>
+                            <button id="btn-remove-sig-upload" class="danger-btn btn-sm" type="button" style="margin-left: auto;">Remove Image</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="modal-actions" style="margin-top:20px;">
+                    <button id="btn-cancel-sig" class="modal-btn cancel" type="button">Cancel</button>
+                    <button id="btn-save-sig" class="modal-btn confirm" type="button">Create & Save</button>
+                </div>
+            </div>
+        </div>
+
         <!-- Toast Container -->
         <div id="toast-container" class="toast-container"></div>
 
@@ -747,10 +887,11 @@
     <script>
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     </script>
-    <script src="{{ url_for('static', filename='api.js') }}"></script>
-    <script src="{{ url_for('static', filename='editor.js') }}"></script>
-    <script src="{{ url_for('static', filename='forms.js') }}"></script>
-    <script src="{{ url_for('static', filename='toolbar.js') }}"></script>
-    <script src="{{ url_for('static', filename='app.js') }}"></script>
+    <script src="{{ url_for('static', filename='api.js') }}?v=1.0.3"></script>
+    <script src="{{ url_for('static', filename='editor.js') }}?v=1.0.3"></script>
+    <script src="{{ url_for('static', filename='forms.js') }}?v=1.0.3"></script>
+    <script src="{{ url_for('static', filename='toolbar.js') }}?v=1.0.3"></script>
+    <script src="{{ url_for('static', filename='signature.js') }}?v=1.0.3"></script>
+    <script src="{{ url_for('static', filename='app.js') }}?v=1.0.3"></script>
 </body>
 </html>

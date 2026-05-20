@@ -2158,3 +2158,473 @@ select {
     border-color: var(--color-primary);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 30%, transparent), inset 0 -4px 0 oklch(0 0 0 / 0.12);
 }
+
+/* Calligraphy font definitions */
+.great-vibes-font {
+    font-family: 'Great Vibes', cursive;
+}
+.alex-brush-font {
+    font-family: 'Alex Brush', cursive;
+}
+.satisfy-font {
+    font-family: 'Satisfy', cursive;
+}
+
+/* Signature Modal styles */
+.sig-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--color-border);
+    margin-bottom: 20px;
+    gap: 8px;
+}
+
+.sig-tab {
+    padding: 10px 20px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.sig-tab:hover {
+    color: var(--color-text);
+}
+
+.sig-tab.active {
+    color: var(--color-primary);
+    border-bottom-color: var(--color-primary);
+}
+
+.canvas-sig-wrapper {
+    background: #ffffff;
+    border: 1.5px dashed var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 4px;
+    position: relative;
+    overflow: hidden;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.02);
+}
+
+#signature-pad-canvas {
+    display: block;
+    width: 100%;
+    height: 200px;
+    background: transparent;
+    cursor: crosshair;
+    touch-action: none;
+}
+
+.sig-canvas-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 12px;
+}
+
+.sig-color-selectors {
+    display: flex;
+    gap: 10px;
+}
+
+.sig-color-btn {
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    min-height: 30px;
+    border-radius: 50%;
+    border: 2px solid var(--color-border);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    padding: 0;
+    box-sizing: border-box;
+    flex-shrink: 0;
+    outline: none;
+}
+
+.sig-color-btn:hover {
+    transform: scale(1.1);
+    border-color: var(--color-primary);
+}
+
+.sig-color-btn.active {
+    transform: scale(1.1);
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-primary);
+}
+
+.sig-color-picker-wrapper {
+    position: relative;
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    min-height: 30px;
+    border-radius: 50%;
+    border: 2px solid var(--color-border);
+    overflow: hidden;
+    transition: all 0.2s ease, background 0.3s ease;
+    background: conic-gradient(from 180deg at 50% 50%, #f43f5e, #eab308, #10b981, #3b82f6, #a855f7, #f43f5e);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    outline: none;
+    box-sizing: border-box;
+    cursor: pointer;
+    padding: 0;
+    flex-shrink: 0;
+}
+
+.sig-color-picker-wrapper:hover {
+    transform: scale(1.1);
+    border-color: var(--color-primary);
+}
+
+.sig-color-picker-wrapper.active {
+    transform: scale(1.1);
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-primary);
+}
+
+.sig-color-picker-wrapper .sig-color-picker-icon {
+    width: 15px;
+    height: 15px;
+    color: #ffffff;
+    pointer-events: none;
+    z-index: 1;
+    filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.45));
+}
+
+.sig-color-picker-wrapper input[type="color"] {
+    position: absolute;
+    top: -5px;
+    left: -5px;
+    width: 40px;
+    height: 40px;
+    border: none;
+    background: none;
+    cursor: pointer;
+    opacity: 0;
+    z-index: 2;
+}
+
+/* Typed signature previews */
+.sig-font-previews {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.sig-font-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    background: var(--color-surface);
+}
+
+.sig-font-row:hover {
+    border-color: var(--color-primary);
+    background: var(--color-surface-offset);
+}
+
+.sig-font-row.active {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 1px var(--color-primary), 0 4px 12px color-mix(in srgb, var(--color-primary) 12%, transparent);
+    background: color-mix(in srgb, var(--color-primary) 4%, var(--color-surface));
+}
+
+.sig-font-preview-text {
+    font-size: 32px;
+    line-height: 1.2;
+    color: #000000; /* Signatures are typed in black by default */
+}
+
+/* If parent theme is dark, signature preview text can still render as black on white or appropriately for the signature */
+.sig-font-name {
+    font-size: 12px;
+    color: var(--color-text-muted);
+}
+
+/* Drag and Drop Zone */
+.sig-upload-dropzone {
+    border: 2px dashed var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: 40px 20px;
+    text-align: center;
+    background: var(--color-surface-offset);
+    transition: all 0.2s ease;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+}
+
+.sig-upload-dropzone:hover, .sig-upload-dropzone.dragover {
+    border-color: var(--color-primary);
+    background: color-mix(in srgb, var(--color-primary) 4%, var(--color-surface));
+}
+
+.sig-upload-icon {
+    width: 48px;
+    height: 48px;
+    color: var(--color-text-muted);
+    stroke-width: 1.5px;
+}
+
+.sig-upload-dropzone p {
+    font-size: 14px;
+    color: var(--color-text-muted);
+    max-width: 280px;
+    margin: 0;
+    line-height: 1.5;
+}
+
+.sig-upload-preview-container {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 16px;
+    background: #ffffff;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    box-shadow: var(--shadow-sm);
+}
+
+#sig-upload-preview-img {
+    max-width: 100%;
+    max-height: 180px;
+    object-fit: contain;
+    border-radius: var(--radius-sm);
+}
+
+/* Gallery inside properties sidebar */
+.sig-gallery-section {
+    display: flex;
+    flex-direction: column;
+}
+
+.sig-gallery-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.sig-gallery-label {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-text-muted);
+}
+
+.sig-add-link-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: transparent;
+    border: none;
+    color: var(--color-primary);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+}
+
+.sig-add-link-btn:hover {
+    background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+}
+
+.signature-list-gallery {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+    min-height: 60px;
+}
+
+.signature-empty-item {
+    grid-column: span 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 60px;
+    border: 1.5px dashed var(--color-border);
+    border-radius: var(--radius-md);
+    font-size: 11px;
+    color: var(--color-text-muted);
+    background: var(--color-surface-offset);
+    text-align: center;
+}
+
+.signature-gallery-item {
+    position: relative;
+    height: 72px;
+    border: 1.5px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: #ffffff; /* Signatures are drawn/saved on transparent/white background so keep item card background clean white for clear preview */
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px;
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+}
+
+.signature-gallery-item:hover {
+    border-color: var(--color-primary);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-md);
+}
+
+.sig-item-preview {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    pointer-events: none;
+}
+
+.sig-item-delete {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.05);
+    border: none;
+    color: var(--color-text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    opacity: 0;
+    padding: 0;
+}
+
+.signature-gallery-item:hover .sig-item-delete {
+    opacity: 1;
+}
+
+.sig-item-delete:hover {
+    background: var(--color-error);
+    color: #ffffff !important;
+}
+
+[data-theme="dark"] .signature-gallery-item {
+    background: #f5f5f5; /* Light grey backdrop for base64 signature images in dark mode so signature line is visible */
+    border-color: rgba(255, 255, 255, 0.08);
+}
+[data-theme="dark"] .canvas-sig-wrapper {
+    border-color: rgba(255, 255, 255, 0.15);
+}
+
+/* Shape tool dropdown styling */
+.tool-dropdown-container {
+    position: relative;
+    width: 42px;
+    height: 42px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.tool-dropdown-container .tool-btn {
+    width: 42px !important;
+    height: 42px !important;
+    margin-bottom: 0 !important;
+}
+
+.dropdown-mini-arrow {
+    position: absolute;
+    bottom: 3px;
+    right: 4px;
+    font-size: 8px;
+    color: var(--color-text-muted);
+    pointer-events: none;
+    line-height: 1;
+}
+
+/* Hover overlay support for shapes dropdown */
+.tool-dropdown-container:hover .tool-dropdown-menu {
+    display: flex !important;
+}
+
+.tool-dropdown-menu {
+    position: absolute;
+    left: calc(100% + 8px);
+    top: 0;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 6px;
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    z-index: 1000;
+    box-shadow: var(--shadow-lg);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    min-width: 140px;
+    animation: fadeIn 0.15s ease-out;
+}
+
+/* Invisible bridge to cover the 8px gap between button and dropdown menu to maintain hover state */
+.tool-dropdown-menu::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -12px;
+    width: 12px;
+    background: transparent;
+    z-index: -1;
+}
+
+.tool-dropdown-menu .menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: transparent;
+    border: none;
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
+    color: var(--color-text);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    text-align: left;
+    width: 100%;
+}
+
+.tool-dropdown-menu .menu-item:hover {
+    background: var(--color-surface-offset);
+    color: var(--color-primary);
+}
+
+.tool-dropdown-menu .menu-item.active {
+    background: color-mix(in srgb, var(--color-primary) 8%, var(--color-surface));
+    color: var(--color-primary);
+}
+
+.tool-dropdown-menu .menu-item svg {
+    width: 16px;
+    height: 16px;
+}
