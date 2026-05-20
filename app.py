@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import os
 import sys
 import tempfile
@@ -562,7 +563,7 @@ def build_text_element_from_spans(page, spans, scale):
 
 def render_page_to_png(page, dpi_scale=2, hide_text=False, hide_editable=False, mask_elements=None):
     mat = fitz.Matrix(dpi_scale, dpi_scale)
-    pix = page.get_pixmap(matrix=mat, alpha=False)
+    pix = page.get_pixmap(matrix=mat, alpha=False, annots=False)
 
     if hide_text or mask_elements:
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
@@ -612,7 +613,7 @@ def render_page_thumbnail(page, max_height=150):
     page_rect = page.rect
     scale = max_height / page_rect.height
     mat = fitz.Matrix(scale, scale)
-    pix = page.get_pixmap(matrix=mat, alpha=False)
+    pix = page.get_pixmap(matrix=mat, alpha=False, annots=False)
     img_data = pix.tobytes("png")
     return base64.b64encode(img_data).decode("utf-8")
 
@@ -1250,9 +1251,63 @@ def parse_color_input(color_str):
     return None
 
 
+SESSION_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions_db.json")
+
+
+def load_session_db():
+    if os.path.exists(SESSION_DB_PATH):
+        try:
+            with open(SESSION_DB_PATH, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_session_db(db):
+    try:
+        with open(SESSION_DB_PATH, "w") as f:
+            json.dump(db, f)
+    except Exception:
+        pass
+
+
+def sync_session_db(session_id):
+    entry = sessions.get(session_id)
+    if entry:
+        doc = entry.get("doc")
+        page_count = len(doc) if doc else entry.get("page_count", 0)
+        db = load_session_db()
+        db[session_id] = {
+            "temp_path": entry.get("temp_path"),
+            "page_count": page_count,
+        }
+        save_session_db(db)
+
+
 def get_session(session_id):
     if session_id not in sessions:
-        return None
+        db = load_session_db()
+        if session_id in db:
+            session_info = db[session_id]
+            temp_path = session_info.get("temp_path")
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    doc = fitz.open(temp_path)
+                    sessions[session_id] = {
+                        "doc": doc,
+                        "temp_path": temp_path,
+                        "page_count": session_info.get("page_count", len(doc)),
+                    }
+                    temp_files[session_id] = temp_path
+                except Exception as e:
+                    print(f"Error restoring session {session_id}: {e}", file=sys.stderr, flush=True)
+                    return None
+            else:
+                return None
+        else:
+            return None
+
     entry = sessions[session_id]
     if isinstance(entry["doc"], str):
         doc = fitz.open(entry["doc"])
@@ -1273,6 +1328,7 @@ def save_session_doc(session_id):
             tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
             doc.save(tmp.name)
             entry["temp_path"] = tmp.name
+    sync_session_db(session_id)
 
 
 def page_size_payload(page):
@@ -1322,6 +1378,7 @@ def upload_pdf():
         "page_count": len(doc),
     }
     temp_files[session_id] = tmp.name
+    sync_session_db(session_id)
 
     return jsonify({
         "session_id": session_id,
@@ -1356,6 +1413,7 @@ def new_pdf():
         "page_count": 1,
     }
     temp_files[session_id] = tmp.name
+    sync_session_db(session_id)
 
     page_sizes = [{"width": w, "height": h}]
     return jsonify({
@@ -1523,6 +1581,7 @@ def save_page(session_id, page_num):
     texts = []
     images_list = []
     paths_list = []
+    stickies = []
 
     for elem in new_elements:
         etype = elem.get("type", "rect")
@@ -1530,8 +1589,10 @@ def save_page(session_id, page_num):
             redactions.append(elem)
         elif etype == "highlight":
             highlights.append(elem)
-        elif etype == "text" or etype == "textbox" or etype == "sticky":
+        elif etype == "text" or etype == "textbox":
             texts.append(elem)
+        elif etype == "sticky":
+            stickies.append(elem)
         elif etype == "image":
             images_list.append(elem)
         elif etype == "path" or etype == "line":
@@ -1731,11 +1792,6 @@ def save_page(session_id, page_num):
         bg_hex = elem.get("backgroundColor", "")
         bg_color = parse_color_input(bg_hex) if bg_hex else None
 
-        if elem.get("type") == "sticky":
-            sticky_color = elem.get("stickyColor", "#fff9c4")
-            bg_color = parse_color_input(sticky_color)
-            bg_hex = sticky_color
-
         opacity = float(elem.get("opacity", 1))
 
         if bg_color:
@@ -1778,12 +1834,17 @@ def save_page(session_id, page_num):
             except Exception:
                 pass
 
-        if elem.get("type") == "sticky":
-            try:
-                annot_point = fitz.Point(rect.x0, rect.y0)
-                page.add_text_annot(annot_point, text or "Note", icon="Note")
-            except Exception:
-                pass
+    for elem in stickies:
+        pdf_bbox = resolve_elem_pdf_bbox(page, elem, 30, 36)
+        rect = fitz.Rect(pdf_bbox)
+        if rect.is_empty:
+            continue
+        text = elem.get("text", "")
+        try:
+            annot_point = fitz.Point(rect.x0, rect.y0)
+            page.add_text_annot(annot_point, text or "Note", icon="Note")
+        except Exception:
+            pass
 
     for elem in images_list:
         pdf_bbox = resolve_elem_pdf_bbox(page, elem, 100, 100)
@@ -2068,6 +2129,12 @@ def cleanup_session(session_id):
                 os.unlink(temp_path)
             except OSError:
                 pass
+    try:
+        db = load_session_db()
+        db.pop(session_id, None)
+        save_session_db(db)
+    except Exception:
+        pass
     return jsonify({"success": True})
 
 

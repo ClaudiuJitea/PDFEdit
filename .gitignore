@@ -51,3 +51,4 @@ secrets.yaml
 uploads/
 temp/
 *.pdf
+sessions_db.json
