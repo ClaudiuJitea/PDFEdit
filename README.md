@@ -2,7 +2,7 @@
   <img src="assets/banner.png" alt="PDFEdit Banner" width="100%">
 </p>
 
-<h1 align="center">📄 PDFEdit</h1>
+<h1 align="center">PDFEdit</h1>
 
 <p align="center">
   <strong>A premium, full-featured web-based PDF editor built with Flask, PyMuPDF, and Fabric.js.</strong>
@@ -18,22 +18,22 @@
 
 ---
 
-## 🌟 Overview
+## Overview
 
 **PDFEdit** is a powerful, self-hosted, web-based PDF editing platform. It brings the complexity of desktop PDF annotation software directly to the browser. By combining a robust Python/Flask backend powered by **PyMuPDF** with a dynamic, high-performance **Fabric.js** canvas frontend, PDFEdit provides seamless document viewing, annotation, form-filling, redact-on-save operations, OCR capabilities, and structured table detection.
 
 ---
 
-## ✨ Key Features
+## Key Features
 
-### 📁 Advanced Document Lifecycle
+### Advanced Document Lifecycle
 *   **Zero-Install Uploads:** Drag-and-drop PDFs (up to 50MB) directly into the upload area or editor overlay. Fast, secure processing.
 *   **Encrypted PDFs:** Full AES-256 password decryption support with secure browser-side password prompt modal.
 *   **Dynamic New Documents:** Create clean blank PDFs from scratch with standard presets (`A4`, `Letter`, `Legal`, `A3`, `A5`) or custom point dimensions.
 *   **Intelligent Local Sync:** Keep work safe with server-side page state commits, automatic thumbnail rendering, and session connection restore from `localStorage` drafts after browser reloads.
 *   **Loss-Free Export:** Download fully assembled PDFs with robust layout integrity, form flattening options, page splits, and multi-level encryption passwords.
 
-### 🎨 Precise Annotations & Visual Edits
+### Precise Annotations & Visual Edits
 *   **Interactive Editing:** Move, scale, rotate, and delete existing PDF-origin text, shapes, drawings, and images. Deletions are securely flattened as true PDF redactions upon saving.
 *   **Multi-font Textboxes:** Insert customizable text nodes with control over typography, sizes, colors, transparency, alignments, background styling, and rotation.
 *   **Dynamic Image Overlay:** Import `PNG`, `JPEG`, `SVG`, or `WebP` graphics. Keep original ratios with aspect-lock scaling, rotation, transparency, and customizable Z-ordering.
@@ -42,25 +42,25 @@
 *   **Professional Signature & Initials Pad:** Draw, type using elegant cursive script generators, or upload your signature. Manage your personal signature drawer with persistent gallery profiles.
 *   **Local History Engine:** Robust per-page multi-step action recovery supporting up to 50 levels of Undo/Redo (`Ctrl+Z` / `Ctrl+Y`).
 
-### 📝 Smart Form Fields & Interactivity
+### Smart Form Fields & Interactivity
 *   **Form Filler:** Interactive filling for standard AcroForms including Text inputs, Checkboxes, Radio buttons, Comboboxes (dropdowns), and multi-select Listboxes.
 *   **Interactive Form Builder:** Design custom form inputs dynamically in visual "Form Mode" with precise sizing, aligning, and positioning.
 *   **Field Management:** Complete overview of all document form elements in a collapsible sidebar with jump-to-field quick links.
 *   **Hyperlink Manager:** Highlight strings of text or draw precise bounding regions to bind external URIs (web, mail, phone presets) or in-document page targets.
 
-### ⚙️ Deep Page Operations
+### Deep Page Operations
 *   **Lazy-Loaded Navigation:** Browse heavy documents easily using custom lazy-loading thumbnails, direct page jump input, and responsive sidebar navigation.
 *   **Visual Page Reordering:** Drag-and-drop thumbnails to seamlessly re-sequence pages in real-time.
 *   **Advanced Page Controls:** Append blank pages, duplicate existing configurations, rotate pages (90°/180°/270°), or purge pages safely (prevents absolute empty documents).
 *   **Per-Page Analytics:** Export standalone high-DPI single pages, extract pristine plain text, execute layout OCR, or run precise AI table structure detection.
 
-### 🧠 Intelligent OCR & Table Extraction
+### Intelligent OCR & Table Extraction
 *   **Server-Side OCR:** Run layout analysis on scanned images or raw PDFs to superimpose editable canvas text blocks (requires *Tesseract OCR* server package).
 *   **Automatic Table Parser:** Scan page coordinates for structured borders and tabular grids. View real-time overlays and export parsed tables directly as ready-to-use CSV logs.
 
 ---
 
-## ⌨️ Hotkeys & Keyboard Shortcuts
+## Hotkeys & Keyboard Shortcuts
 
 Enhance your productivity with rich, desktop-grade keyboard layouts:
 
@@ -95,7 +95,7 @@ Enhance your productivity with rich, desktop-grade keyboard layouts:
 
 ---
 
-## 🏗️ Technical Architecture & Design
+## Technical Architecture & Design
 
 PDFEdit is engineered as a lightweight, zero-latency hybrid application decoupling complex document rendering from interactive UI state.
 
@@ -126,7 +126,7 @@ graph TD
 
 ---
 
-## 📂 Project Structure
+## Project Structure
 
 ```
 PDFEdit/
@@ -151,11 +151,11 @@ PDFEdit/
 
 ---
 
-## 🚀 Installation & Getting Started
+## Installation & Getting Started
 
 Follow these steps to run PDFEdit on your local machine.
 
-### 📋 Prerequisites
+### Prerequisites
 
 *   **Python 3.8+**
 *   **Tesseract OCR** (Optional, required for OCR-to-text layer conversions)
@@ -165,7 +165,7 @@ Follow these steps to run PDFEdit on your local machine.
 
 ---
 
-### 🔧 Step-by-Step Installation
+### Step-by-Step Installation
 
 #### 1. Clone the Repository
 ```bash
@@ -209,7 +209,7 @@ pip install -r requirements.txt
 
 ---
 
-### ⚡ Running the Server
+### Running the Server
 
 Launch the web service in development mode:
 ```bash
@@ -225,7 +225,7 @@ python app.py
 
 ---
 
-## 🎨 Technology Stack
+## Technology Stack
 
 PDFEdit relies on a highly focused, modern open-source toolchain:
 
@@ -237,14 +237,14 @@ PDFEdit relies on a highly focused, modern open-source toolchain:
 
 ---
 
-## 🔌 API Reference
+## API Reference
 
 The PDFEdit server exposes a comprehensive, RESTful JSON API for PDF extraction, conversion, manipulation, and metadata management.
 
 ### Base URL: `http://127.0.0.1:5001/api`
 
 <details>
-<summary>📂 1. Document & Session Lifecycle</summary>
+<summary>1. Document & Session Lifecycle</summary>
 
 | Endpoint | Method | Description | Payload / Parameters |
 |:---|:---|:---|:---|
@@ -261,7 +261,7 @@ The PDFEdit server exposes a comprehensive, RESTful JSON API for PDF extraction,
 </details>
 
 <details>
-<summary>📄 2. Page & Navigation Operations</summary>
+<summary>2. Page & Navigation Operations</summary>
 
 | Endpoint | Method | Description | Payload / Parameters |
 |:---|:---|:---|:---|
@@ -275,7 +275,7 @@ The PDFEdit server exposes a comprehensive, RESTful JSON API for PDF extraction,
 </details>
 
 <details>
-<summary>✒️ 3. Canvas Elements, Links & Form Fields</summary>
+<summary>3. Canvas Elements, Links & Form Fields</summary>
 
 | Endpoint | Method | Description | Payload / Parameters |
 |:---|:---|:---|:---|
@@ -292,7 +292,7 @@ The PDFEdit server exposes a comprehensive, RESTful JSON API for PDF extraction,
 </details>
 
 <details>
-<summary>🔍 4. Extraction, OCR & Search Tools</summary>
+<summary>4. Extraction, OCR & Search Tools</summary>
 
 | Endpoint | Method | Description | Payload / Parameters |
 |:---|:---|:---|:---|
@@ -305,7 +305,7 @@ The PDFEdit server exposes a comprehensive, RESTful JSON API for PDF extraction,
 </details>
 
 <details>
-<summary>📦 5. Export Operations</summary>
+<summary>5. Export Operations</summary>
 
 | Endpoint | Method | Description | Payload / Parameters |
 |:---|:---|:---|:---|
@@ -317,6 +317,6 @@ The PDFEdit server exposes a comprehensive, RESTful JSON API for PDF extraction,
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
