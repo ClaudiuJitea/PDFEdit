@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.png" alt="PDFEdit Banner" width="100%">
+  <img src="assets/banner_mock.png" alt="PDFEdit Banner" width="100%">
 </p>
 
 <h1 align="center">PDFEdit</h1>
