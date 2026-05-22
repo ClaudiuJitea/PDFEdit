@@ -1,10 +1,12 @@
 import base64
+import csv
 import io
 import json
 import os
 import sys
 import tempfile
 import uuid
+import zipfile
 
 import fitz
 from flask import Flask, jsonify, request, send_file, render_template
@@ -58,6 +60,14 @@ WIDGET_TYPE_MAP = {
     "checkbox": fitz.PDF_WIDGET_TYPE_CHECKBOX,
     "radio": fitz.PDF_WIDGET_TYPE_RADIOBUTTON,
     "choice": fitz.PDF_WIDGET_TYPE_COMBOBOX,
+    "listbox": fitz.PDF_WIDGET_TYPE_LISTBOX,
+}
+
+STAMP_PRESETS = {
+    "approved": "Approved",
+    "draft": "Draft",
+    "confidential": "Confidential",
+    "void": "VOID",
 }
 
 
@@ -654,7 +664,7 @@ def make_default_widget_rect(page, widget_kind, index):
 
     if widget_kind == "text":
         return fitz.Rect(left, top, min(left + 220, page.rect.width - 72), top + 28)
-    if widget_kind == "choice":
+    if widget_kind in ("choice", "listbox"):
         return fitz.Rect(left, top, min(left + 180, page.rect.width - 72), top + 28)
     if widget_kind == "checkbox":
         return fitz.Rect(left, top, left + 18, top + 18)
@@ -678,6 +688,7 @@ def create_form_widget(page, widget_kind):
         "checkbox": f"Checkbox {widget_index}",
         "radio": f"Radio {widget_index}",
         "choice": f"Dropdown {widget_index}",
+        "listbox": f"List Box {widget_index}",
     }[normalized_kind]
     widget.rect = make_default_widget_rect(page, normalized_kind, len(existing_widgets))
     widget.border_color = (0.24, 0.39, 0.45)
@@ -685,11 +696,11 @@ def create_form_widget(page, widget_kind):
     widget.text_color = (0, 0, 0)
     widget.border_width = 1
 
-    if normalized_kind in ("text", "choice"):
+    if normalized_kind in ("text", "choice", "listbox"):
         widget.text_font = "Helv"
         widget.text_fontsize = 0
 
-    if normalized_kind == "choice":
+    if normalized_kind in ("choice", "listbox"):
         widget.choice_values = ["Option 1", "Option 2", "Option 3"]
         widget.field_value = "Option 1"
 
@@ -716,7 +727,12 @@ def extract_page_widgets(page, scale=RENDER_SCALE):
             rect = widget.rect
             bbox = [rect.x0, rect.y0, rect.x1, rect.y1]
             field_type = int(widget.field_type or 0)
-            widget_kind = WIDGET_KIND_MAP.get(field_type, "unknown")
+            if field_type == fitz.PDF_WIDGET_TYPE_LISTBOX:
+                widget_kind = "listbox"
+            elif field_type == fitz.PDF_WIDGET_TYPE_COMBOBOX:
+                widget_kind = "choice"
+            else:
+                widget_kind = WIDGET_KIND_MAP.get(field_type, "unknown")
             choice_values = normalize_widget_choice_values(getattr(widget, "choice_values", None))
             on_value = None
             button_states = None
@@ -1230,6 +1246,282 @@ def color_to_hex(r, g, b):
     )
 
 
+def parse_linestyle_dashes(elem, stroke_w):
+    linestyle = (elem.get("lineStyle") or elem.get("linestyle") or "").lower()
+    if linestyle == "dashed":
+        return [max(stroke_w * 3, 1), max(stroke_w * 2, 1)]
+    if linestyle == "dotted":
+        return [max(stroke_w, 0.5), max(stroke_w, 0.5)]
+    dash_array = elem.get("strokeDashArray")
+    if isinstance(dash_array, (list, tuple)) and len(dash_array) >= 2:
+        scale = 0.5
+        return [max(0.5, float(d) * scale) for d in dash_array[:2]]
+    return None
+
+
+def shape_finish_kwargs(stroke_color, fill_color, stroke_w, elem=None, fill=None):
+    kwargs = {"color": stroke_color, "fill": fill if fill is not None else fill_color, "width": stroke_w}
+    if elem is not None:
+        dashes = parse_linestyle_dashes(elem, stroke_w)
+        if dashes:
+            kwargs["dashes"] = dashes
+    return kwargs
+
+
+def draw_shape_rect(shape_obj, rect, corner_radius=0):
+    radius = float(corner_radius or 0)
+    if radius > 0:
+        try:
+            shape_obj.draw_rect(rect, corners=radius)
+            return
+        except TypeError:
+            pass
+    shape_obj.draw_rect(rect)
+
+
+def apply_text_markup_annots(page, rect, text, elem):
+    if not text or rect.is_empty:
+        return
+    try:
+        quads = page.search_for(text, quads=True, clip=rect)
+    except Exception:
+        quads = []
+    if not quads:
+        return
+    color = parse_color_input(elem.get("fill", "#000000")) or (0, 0, 0)
+    try:
+        if elem.get("underline"):
+            for quad in quads:
+                page.add_underline_annot([quad])
+        if elem.get("strikeout"):
+            for quad in quads:
+                page.add_strikeout_annot([quad])
+        if elem.get("squiggly"):
+            for quad in quads:
+                page.add_squiggly_annot([quad])
+    except Exception:
+        pass
+
+
+def parse_export_request():
+    body = request.get_json(silent=True) or {}
+    flatten = body.get("flatten", False)
+    if isinstance(flatten, str):
+        flatten = flatten.lower() in ("1", "true", "yes")
+    from_page = body.get("from_page")
+    to_page = body.get("to_page")
+    if from_page is not None:
+        from_page = int(from_page)
+    if to_page is not None:
+        to_page = int(to_page)
+    return {
+        "flatten": bool(flatten),
+        "from_page": from_page,
+        "to_page": to_page,
+        "user_password": (body.get("user_password") or "").strip() or None,
+        "owner_password": (body.get("owner_password") or "").strip() or None,
+        "split_pages": bool(body.get("split_pages", False)),
+    }
+
+
+def build_export_output_doc(source_doc, options):
+    from_page = options.get("from_page")
+    to_page = options.get("to_page")
+    if options.get("flatten"):
+        export_doc = build_flattened_export_doc(source_doc, from_page=from_page, to_page=to_page)
+    else:
+        export_doc = build_export_doc(source_doc, from_page=from_page, to_page=to_page)
+    return export_doc
+
+
+def save_export_doc_to_buffer(doc, options):
+    save_kwargs = {"garbage": 4, "deflate": True}
+    user_pw = options.get("user_password")
+    owner_pw = options.get("owner_password")
+    if user_pw or owner_pw:
+        save_kwargs["encryption"] = fitz.PDF_ENCRYPT_AES_256
+        save_kwargs["user_pw"] = user_pw or ""
+        save_kwargs["owner_pw"] = owner_pw or user_pw or ""
+    buf = io.BytesIO()
+    doc.save(buf, **save_kwargs)
+    doc.close()
+    buf.seek(0)
+    return buf
+
+
+def open_uploaded_pdf(data, password=None):
+    doc = fitz.open(stream=data, filetype="pdf")
+    if doc.needs_pass:
+        if not password:
+            doc.close()
+            return None, "password_required"
+        if not doc.authenticate(password):
+            doc.close()
+            return None, "invalid_password"
+    return doc, None
+
+
+def toc_to_json(doc):
+    try:
+        toc = doc.get_toc(simple=False) or []
+    except TypeError:
+        toc = doc.get_toc() or []
+    items = []
+    for entry in toc:
+        if len(entry) >= 3:
+            level, title, page = entry[0], entry[1], entry[2]
+            items.append({"level": level, "title": title, "page": max(0, int(page) - 1)})
+    return items
+
+
+def json_to_toc(items):
+    toc = []
+    for item in items or []:
+        level = int(item.get("level", 1))
+        title = str(item.get("title", "")).strip()
+        page = int(item.get("page", 0)) + 1
+        if title:
+            toc.append([level, title, page])
+    return toc
+
+
+def link_from_to_pdf_bbox(link_from):
+    if link_from is None:
+        return None
+    try:
+        if isinstance(link_from, fitz.Rect):
+            rect = link_from
+        elif isinstance(link_from, fitz.Quad):
+            rect = link_from.rect
+        elif isinstance(link_from, (list, tuple)) and len(link_from) >= 4:
+            rect = fitz.Rect([float(link_from[i]) for i in range(4)])
+        else:
+            rect = fitz.Rect(link_from)
+        rect.normalize()
+        if rect.is_empty or rect.is_infinite:
+            return None
+        return [rect.x0, rect.y0, rect.x1, rect.y1]
+    except Exception:
+        return None
+
+
+def normalize_link_uri(uri):
+    uri = (uri or "").strip()
+    if not uri:
+        return ""
+    lowered = uri.lower()
+    if lowered.startswith(("http://", "https://", "mailto:", "tel:", "file://", "ftp://")):
+        return uri
+    if "@" in uri and not lowered.startswith("mailto:"):
+        return f"mailto:{uri}"
+    if uri.replace("+", "").replace("-", "").replace(" ", "").isdigit():
+        return f"tel:{uri}"
+    return f"https://{uri}"
+
+
+def extract_page_links(page, scale=RENDER_SCALE, page_num=None):
+    links = []
+    try:
+        page_links = page.get_links() or []
+    except Exception as exc:
+        print(f"Links extraction error: {exc}", file=sys.stderr, flush=True)
+        return links
+
+    link_goto = getattr(fitz, "LINK_GOTO", 1)
+
+    for raw_index, link in enumerate(page_links):
+        try:
+            pdf_bbox = link_from_to_pdf_bbox(link.get("from"))
+            if not pdf_bbox:
+                continue
+
+            kind_num = int(link.get("kind", 0) or 0)
+            link_type_name = str(link.get("type", "") or "").lower()
+            is_goto = kind_num == link_goto or link_type_name == "goto"
+
+            page_target = link.get("page")
+            if page_target is not None:
+                try:
+                    page_target = int(page_target)
+                except (TypeError, ValueError):
+                    page_target = None
+
+            uri = link.get("uri")
+            if uri is not None:
+                uri = str(uri)
+
+            entry = {
+                "index": raw_index,
+                "bbox": scaled_view_bbox(page, pdf_bbox, scale),
+                "pdf_bbox": pdf_bbox,
+                "kind": kind_num,
+                "link_type": "goto" if is_goto else "uri",
+                "uri": uri,
+                "page": page_target,
+            }
+            if page_num is not None:
+                entry["page_num"] = page_num
+            links.append(entry)
+        except Exception as exc:
+            print(f"Link parse error: {exc}", file=sys.stderr, flush=True)
+            continue
+
+    return links
+
+
+def get_raw_page_link(page, index):
+    links = page.get_links() or []
+    if index < 0 or index >= len(links):
+        return None
+    return links[index]
+
+
+def delete_page_link_at_index(page, index):
+    link = get_raw_page_link(page, index)
+    if link is None:
+        raise ValueError("Link index out of range")
+    page.delete_link(link)
+
+
+def insert_page_link(page, doc, pdf_coords, link_kind, uri=None, target_page=None):
+    rect = fitz.Rect(pdf_coords)
+    rect.normalize()
+    if rect.is_empty or rect.width < 1 or rect.height < 1:
+        raise ValueError("Link area is too small")
+
+    if link_kind == "goto" and target_page is not None:
+        target = int(target_page)
+        if target < 0 or target >= len(doc):
+            raise ValueError("Target page out of range")
+        page.insert_link({
+            "kind": fitz.LINK_GOTO,
+            "from": rect,
+            "page": target,
+            "to": fitz.Point(0, 0),
+        })
+    else:
+        uri = normalize_link_uri(uri)
+        if not uri:
+            raise ValueError("URL is required")
+        page.insert_link({
+            "kind": fitz.LINK_URI,
+            "from": rect,
+            "uri": uri,
+        })
+
+
+def link_rect_from_body(page, body):
+    canvas_bbox = body.get("bbox")
+    pdf_bbox = body.get("pdf_bbox")
+
+    if canvas_bbox and len(canvas_bbox) == 4:
+        view_bbox = [float(canvas_bbox[i]) / RENDER_SCALE for i in range(4)]
+        return page_rect_to_pdf(page, view_bbox)
+    if pdf_bbox and len(pdf_bbox) == 4:
+        return page_rect_to_pdf(page, [float(v) for v in pdf_bbox])
+    return None
+
+
 def parse_color_input(color_str):
     if not color_str or color_str == "transparent":
         return None
@@ -1354,8 +1646,15 @@ def upload_pdf():
     if not validate_pdf_magic(data):
         return jsonify({"error": "Invalid PDF file"}), 400
 
+    password = (request.form.get("password") or "").strip() or None
     try:
-        doc = fitz.open(stream=data, filetype="pdf")
+        doc, auth_error = open_uploaded_pdf(data, password=password)
+        if auth_error == "password_required":
+            return jsonify({"error": "Password required", "password_required": True}), 401
+        if auth_error == "invalid_password":
+            return jsonify({"error": "Invalid password", "password_required": True}), 401
+        if doc is None:
+            return jsonify({"error": "Failed to open PDF"}), 400
     except Exception as e:
         return jsonify({"error": f"Failed to open PDF: {str(e)}"}), 400
 
@@ -1376,6 +1675,7 @@ def upload_pdf():
         "doc": doc,
         "temp_path": tmp.name,
         "page_count": len(doc),
+        "password": password,
     }
     temp_files[session_id] = tmp.name
     sync_session_db(session_id)
@@ -1384,7 +1684,119 @@ def upload_pdf():
         "session_id": session_id,
         "page_count": len(doc),
         "page_sizes": page_sizes,
+        "metadata": dict(doc.metadata or {}),
+        "bookmarks": toc_to_json(doc),
     })
+
+
+@app.route("/api/session/<session_id>/merge", methods=["POST"])
+def merge_pdf(session_id):
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+
+    file = request.files["file"]
+    data = file.read()
+    if not validate_pdf_magic(data):
+        return jsonify({"error": "Invalid PDF file"}), 400
+
+    password = (request.form.get("password") or "").strip() or None
+    try:
+        merge_doc, auth_error = open_uploaded_pdf(data, password=password)
+        if auth_error:
+            return jsonify({"error": "Password required" if auth_error == "password_required" else "Invalid password", "password_required": True}), 401
+    except Exception as e:
+        return jsonify({"error": f"Failed to open PDF: {str(e)}"}), 400
+
+    doc = entry["doc"]
+    position = request.form.get("position", "end")
+    insert_at = len(doc) if position != "start" else 0
+    doc.insert_pdf(merge_doc, start_at=insert_at)
+    merge_doc.close()
+
+    entry["page_count"] = len(doc)
+    save_session_doc(session_id)
+
+    page_sizes = [page_size_payload(doc[i]) for i in range(len(doc))]
+    return jsonify({
+        "page_count": len(doc),
+        "page_sizes": page_sizes,
+    })
+
+
+@app.route("/api/session/<session_id>/metadata", methods=["GET", "PUT"])
+def session_metadata(session_id):
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    doc = entry["doc"]
+    if request.method == "GET":
+        return jsonify({"metadata": dict(doc.metadata or {})})
+
+    body = request.get_json(silent=True) or {}
+    metadata = body.get("metadata") or {}
+    for key in ("title", "author", "subject", "keywords", "creator", "producer"):
+        if key in metadata:
+            doc.set_metadata({key: str(metadata.get(key) or "")})
+    save_session_doc(session_id)
+    return jsonify({"metadata": dict(doc.metadata or {})})
+
+
+@app.route("/api/session/<session_id>/bookmarks", methods=["GET", "PUT"])
+def session_bookmarks(session_id):
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    doc = entry["doc"]
+    if request.method == "GET":
+        return jsonify({"bookmarks": toc_to_json(doc)})
+
+    body = request.get_json(silent=True) or {}
+    doc.set_toc(json_to_toc(body.get("bookmarks", [])))
+    save_session_doc(session_id)
+    return jsonify({"bookmarks": toc_to_json(doc)})
+
+
+@app.route("/api/session/<session_id>/search", methods=["GET"])
+def search_document(session_id):
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    query = (request.args.get("q") or "").strip()
+    if not query:
+        return jsonify({"error": "Search query required"}), 400
+
+    page_filter = request.args.get("page")
+    doc = entry["doc"]
+    results = []
+    pages = [int(page_filter)] if page_filter is not None else range(len(doc))
+
+    for page_num in pages:
+        if page_num < 0 or page_num >= len(doc):
+            continue
+        page = doc[page_num]
+        try:
+            rects = page.search_for(query, quads=True)
+        except Exception:
+            rects = page.search_for(query)
+        for hit in rects:
+            if isinstance(hit, fitz.Quad):
+                rect = hit.rect
+            else:
+                rect = fitz.Rect(hit)
+            results.append({
+                "page": page_num,
+                "bbox": scaled_view_bbox(page, [rect.x0, rect.y0, rect.x1, rect.y1], RENDER_SCALE),
+                "pdf_bbox": [rect.x0, rect.y0, rect.x1, rect.y1],
+            })
+
+    return jsonify({"query": query, "results": results, "count": len(results)})
 
 
 @app.route("/api/new", methods=["POST"])
@@ -1582,6 +1994,9 @@ def save_page(session_id, page_num):
     images_list = []
     paths_list = []
     stickies = []
+    stamps = []
+    freetexts = []
+    inks = []
 
     for elem in new_elements:
         etype = elem.get("type", "rect")
@@ -1589,12 +2004,19 @@ def save_page(session_id, page_num):
             redactions.append(elem)
         elif etype == "highlight":
             highlights.append(elem)
-        elif etype == "text" or etype == "textbox":
-            texts.append(elem)
+        elif etype in ("text", "textbox", "freetext"):
+            if etype == "freetext":
+                freetexts.append(elem)
+            else:
+                texts.append(elem)
         elif etype == "sticky":
             stickies.append(elem)
         elif etype == "image":
             images_list.append(elem)
+        elif etype == "stamp":
+            stamps.append(elem)
+        elif etype == "ink":
+            inks.append(elem)
         elif etype == "path" or etype == "line":
             paths_list.append(elem)
         else:
@@ -1612,24 +2034,19 @@ def save_page(session_id, page_num):
         stroke_w = float(elem.get("strokeWidth", 1)) / 2.0
         opacity = float(elem.get("opacity", 1))
 
+        corner_radius = float(elem.get("cornerRadius", elem.get("rx", 0)) or 0) / 2.0
+        finish_kw = shape_finish_kwargs(stroke_color, fill_color, stroke_w, elem)
+
         etype = elem.get("type", "rect")
         if etype == "ellipse":
             shape_obj = page.new_shape()
             shape_obj.draw_oval(rect)
-            shape_obj.finish(
-                color=stroke_color,
-                fill=fill_color,
-                width=stroke_w,
-            )
+            shape_obj.finish(**finish_kw)
             shape_obj.commit()
         elif etype == "rect":
             shape_obj = page.new_shape()
-            shape_obj.draw_rect(rect)
-            shape_obj.finish(
-                color=stroke_color,
-                fill=fill_color,
-                width=stroke_w,
-            )
+            draw_shape_rect(shape_obj, rect, corner_radius)
+            shape_obj.finish(**finish_kw)
             shape_obj.commit()
         elif etype == "star":
             import math
@@ -1658,22 +2075,15 @@ def save_page(session_id, page_num):
             
             shape_obj = page.new_shape()
             shape_obj.draw_polyline(points)
-            shape_obj.finish(
-                color=stroke_color,
-                fill=fill_color,
-                width=stroke_w,
-            )
+            shape_obj.finish(**finish_kw)
             shape_obj.commit()
         elif etype == "line":
+            line_finish = shape_finish_kwargs(stroke_color, None, stroke_w, elem)
             shape_obj = page.new_shape()
             p1 = fitz.Point(rect.x0, rect.y0)
             p2 = fitz.Point(rect.x1, rect.y1)
             shape_obj.draw_line(p1, p2)
-            shape_obj.finish(
-                color=stroke_color,
-                fill=None,
-                width=stroke_w,
-            )
+            shape_obj.finish(**line_finish)
             shape_obj.commit()
             has_arrow = elem.get("arrow", False)
             if has_arrow:
@@ -1740,9 +2150,20 @@ def save_page(session_id, page_num):
             if len(points) >= 2:
                 stroke_color = parse_color_input(elem.get("stroke", ""))
                 stroke_w = float(elem.get("strokeWidth", 1)) / 2.0
+                use_ink = elem.get("useInkAnnot", True)
+                if use_ink and len(points) >= 2:
+                    try:
+                        annot = page.add_ink_annot([points])
+                        if stroke_color:
+                            annot.set_colors(stroke=stroke_color)
+                        annot.set_border(width=stroke_w)
+                        annot.update()
+                        continue
+                    except Exception:
+                        pass
                 shape_obj = page.new_shape()
                 shape_obj.draw_polyline(points)
-                shape_obj.finish(color=stroke_color, fill=None, width=stroke_w)
+                shape_obj.finish(**shape_finish_kwargs(stroke_color, None, stroke_w, elem))
                 shape_obj.commit()
         elif isinstance(path_data, list) and len(path_data) > 0:
             stroke_color = parse_color_input(elem.get("stroke", ""))
@@ -1762,10 +2183,41 @@ def save_page(session_id, page_num):
                         y = float(item.get("y2", item.get("y", 0))) / 2.0
                     points.append(page_point_to_pdf(page, fitz.Point(x, y)))
             if len(points) >= 2:
+                use_ink = elem.get("useInkAnnot", True)
+                if use_ink:
+                    try:
+                        annot = page.add_ink_annot([points])
+                        if stroke_color:
+                            annot.set_colors(stroke=stroke_color)
+                        annot.set_border(width=stroke_w)
+                        annot.update()
+                        continue
+                    except Exception:
+                        pass
                 shape_obj = page.new_shape()
                 shape_obj.draw_polyline(points)
-                shape_obj.finish(color=stroke_color, fill=None, width=stroke_w)
+                shape_obj.finish(**shape_finish_kwargs(stroke_color, None, stroke_w, elem))
                 shape_obj.commit()
+
+    for elem in inks:
+        points_raw = elem.get("inkPoints") or elem.get("points") or []
+        if not points_raw:
+            continue
+        points = []
+        for pt in points_raw:
+            if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                points.append(fitz.Point(float(pt[0]), float(pt[1])))
+        if len(points) >= 2:
+            try:
+                stroke_color = parse_color_input(elem.get("stroke", "#000000"))
+                stroke_w = float(elem.get("strokeWidth", 2)) / 2.0
+                annot = page.add_ink_annot([points])
+                if stroke_color:
+                    annot.set_colors(stroke=stroke_color)
+                annot.set_border(width=stroke_w)
+                annot.update()
+            except Exception:
+                pass
 
     for elem in texts:
         text = elem.get("text", "")
@@ -1804,32 +2256,88 @@ def save_page(session_id, page_num):
         if rect.height < min_height:
             rect = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + min_height)
 
-        try:
-            rc = page.insert_textbox(
-                rect,
-                text,
-                fontname=pdf_font,
-                fontsize=max(font_size, 4),
-                color=color_val,
-                align=fitz.TEXT_ALIGN_LEFT,
-            )
-            if rc < 0:
-                expanded = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y1 + abs(rc) + font_size)
-                page.insert_textbox(
-                    expanded,
+        html_mode = elem.get("html") or elem.get("richHtml")
+        inserted = False
+        if html_mode:
+            try:
+                html = text if "<" in text else f"<p>{text}</p>"
+                page.insert_htmlbox(rect, html)
+                inserted = True
+            except Exception:
+                inserted = False
+
+        if not inserted:
+            try:
+                rc = page.insert_textbox(
+                    rect,
                     text,
                     fontname=pdf_font,
                     fontsize=max(font_size, 4),
                     color=color_val,
+                    align=fitz.TEXT_ALIGN_LEFT,
                 )
+                if rc < 0:
+                    expanded = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y1 + abs(rc) + font_size)
+                    page.insert_textbox(
+                        expanded,
+                        text,
+                        fontname=pdf_font,
+                        fontsize=max(font_size, 4),
+                        color=color_val,
+                    )
+            except Exception:
+                try:
+                    page.insert_textbox(
+                        rect,
+                        text,
+                        fontname="helv",
+                        fontsize=max(font_size, 4),
+                        color=color_val,
+                    )
+                except Exception:
+                    pass
+
+        apply_text_markup_annots(page, rect, text, elem)
+
+    for elem in freetexts:
+        text = elem.get("text", "")
+        pdf_bbox = resolve_elem_pdf_bbox(page, elem, 200, 40)
+        rect = fitz.Rect(pdf_bbox)
+        if rect.is_empty:
+            continue
+        try:
+            annot = page.add_freetext_annot(
+                rect,
+                text or "",
+                fontsize=float(elem.get("fontSize", 14)) / 2.0,
+                fontname=pdf_font_name(elem.get("fontFamily", "Helvetica")),
+                text_color=parse_color_input(elem.get("fill", "#000000")) or (0, 0, 0),
+                fill_color=parse_color_input(elem.get("backgroundColor", "#ffffff")) or (1, 1, 1),
+            )
+            annot.update()
+        except Exception:
+            pass
+
+    for elem in stamps:
+        pdf_bbox = resolve_elem_pdf_bbox(page, elem, 120, 40)
+        rect = fitz.Rect(pdf_bbox)
+        if rect.is_empty:
+            continue
+        stamp_key = (elem.get("stampType") or elem.get("stamp") or "approved").lower()
+        stamp_text = elem.get("text") or STAMP_PRESETS.get(stamp_key, stamp_key.title())
+        try:
+            annot = page.add_stamp_annot(rect, stamp=0)
+            annot.set_info(content=stamp_text)
+            annot.update()
         except Exception:
             try:
                 page.insert_textbox(
                     rect,
-                    text,
-                    fontname="helv",
-                    fontsize=max(font_size, 4),
-                    color=color_val,
+                    stamp_text,
+                    fontname="hebo",
+                    fontsize=14,
+                    color=(0.8, 0, 0),
+                    align=fitz.TEXT_ALIGN_CENTER,
                 )
             except Exception:
                 pass
@@ -1918,11 +2426,34 @@ def export_pdf(session_id):
     if not entry:
         return jsonify({"error": "Session not found"}), 404
 
-    doc = build_export_doc(entry["doc"])
-    buf = io.BytesIO()
-    doc.save(buf, garbage=4, deflate=True)
-    doc.close()
-    buf.seek(0)
+    options = parse_export_request()
+    source_doc = entry["doc"]
+
+    if options.get("split_pages"):
+        from_page = options.get("from_page") or 0
+        to_page = options.get("to_page")
+        if to_page is None:
+            to_page = len(source_doc) - 1
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for pno in range(from_page, to_page + 1):
+                if pno < 0 or pno >= len(source_doc):
+                    continue
+                single = build_export_output_doc(source_doc, {**options, "from_page": pno, "to_page": pno, "split_pages": False})
+                page_buf = io.BytesIO()
+                single.save(page_buf, garbage=4, deflate=True)
+                single.close()
+                zf.writestr(f"page-{pno + 1}.pdf", page_buf.getvalue())
+        zip_buf.seek(0)
+        return send_file(
+            zip_buf,
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name="pages.zip",
+        )
+
+    export_doc = build_export_output_doc(source_doc, options)
+    buf = save_export_doc_to_buffer(export_doc, options)
 
     return send_file(
         buf,
@@ -1942,18 +2473,298 @@ def export_single_page_pdf(session_id, page_num):
     if page_num < 0 or page_num >= len(source_doc):
         return jsonify({"error": "Page out of range"}), 400
 
-    single_doc = build_export_doc(source_doc, from_page=page_num, to_page=page_num)
-
-    buf = io.BytesIO()
-    single_doc.save(buf, garbage=4, deflate=True)
-    single_doc.close()
-    buf.seek(0)
+    options = parse_export_request()
+    options["from_page"] = page_num
+    options["to_page"] = page_num
+    single_doc = build_export_output_doc(source_doc, options)
+    buf = save_export_doc_to_buffer(single_doc, options)
 
     return send_file(
         buf,
         mimetype="application/pdf",
         as_attachment=True,
         download_name=f"page-{page_num + 1}.pdf",
+    )
+
+
+@app.route("/api/export/<session_id>/<int:page_num>/png", methods=["POST"])
+def export_page_png(session_id, page_num):
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    doc = entry["doc"]
+    if page_num < 0 or page_num >= len(doc):
+        return jsonify({"error": "Page out of range"}), 400
+
+    body = request.get_json(silent=True) or {}
+    dpi = float(body.get("dpi", 150))
+    page = doc[page_num]
+    pix = page.get_pixmap(matrix=fitz.Matrix(dpi / 72, dpi / 72))
+    buf = io.BytesIO(pix.tobytes("png"))
+    buf.seek(0)
+    return send_file(
+        buf,
+        mimetype="image/png",
+        as_attachment=True,
+        download_name=f"page-{page_num + 1}.png",
+    )
+
+
+@app.route("/api/page/<session_id>/<int:page_num>/links", methods=["GET", "POST"])
+def page_links(session_id, page_num):
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    doc = entry["doc"]
+    if page_num < 0 or page_num >= len(doc):
+        return jsonify({"error": "Page out of range"}), 400
+
+    if request.method == "GET":
+        try:
+            page = doc[page_num]
+            links = extract_page_links(page, page_num=page_num)
+            return jsonify({"links": links, "page": page_num})
+        except Exception as exc:
+            print(f"GET links error: {exc}", file=sys.stderr, flush=True)
+            return jsonify({"links": [], "warning": f"Failed to load links: {exc}"}), 200
+
+    page = doc[page_num]
+    body = request.get_json(silent=True) or {}
+    pdf_coords = link_rect_from_body(page, body)
+    if not pdf_coords:
+        return jsonify({"error": "bbox or pdf_bbox required"}), 400
+
+    link_kind = body.get("kind", "uri")
+    try:
+        insert_page_link(
+            page,
+            doc,
+            pdf_coords,
+            link_kind,
+            uri=body.get("uri"),
+            target_page=body.get("page"),
+        )
+        try:
+            save_session_doc(session_id)
+        except Exception as save_exc:
+            print(f"Link save warning: {save_exc}", file=sys.stderr, flush=True)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        print(f"Link insert error: {exc}", file=sys.stderr, flush=True)
+        return jsonify({"error": f"Failed to create link: {exc}"}), 500
+
+    page = doc[page_num]
+    links = extract_page_links(page, page_num=page_num)
+    return jsonify({"success": True, "links": links, "link": links[-1] if links else None})
+
+
+@app.route("/api/page/<session_id>/<int:page_num>/links/<int:link_index>", methods=["PUT", "DELETE"])
+def page_link_item(session_id, page_num, link_index):
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    doc = entry["doc"]
+    if page_num < 0 or page_num >= len(doc):
+        return jsonify({"error": "Page out of range"}), 400
+
+    page = doc[page_num]
+    if get_raw_page_link(page, link_index) is None:
+        return jsonify({"error": "Link not found"}), 404
+
+    if request.method == "DELETE":
+        try:
+            delete_page_link_at_index(page, link_index)
+            save_session_doc(session_id)
+        except Exception as exc:
+            print(f"Link delete error: {exc}", file=sys.stderr, flush=True)
+            return jsonify({"error": f"Failed to delete link: {exc}"}), 500
+
+        page = doc[page_num]
+        links = extract_page_links(page, page_num=page_num)
+        return jsonify({"success": True, "links": links})
+
+    body = request.get_json(silent=True) or {}
+    old_link = get_raw_page_link(page, link_index)
+    pdf_bbox = link_from_to_pdf_bbox(old_link.get("from")) if old_link else None
+    new_coords = link_rect_from_body(page, body)
+    if new_coords:
+        pdf_bbox = new_coords
+    if not pdf_bbox:
+        return jsonify({"error": "Could not resolve link area"}), 400
+
+    link_kind = body.get("kind")
+    if link_kind is None:
+        kind_num = int(old_link.get("kind", 0) or 0)
+        link_kind = "goto" if kind_num == getattr(fitz, "LINK_GOTO", 1) else "uri"
+
+    uri = body.get("uri", old_link.get("uri") if old_link else None)
+    target_page = body.get("page", old_link.get("page") if old_link else None)
+
+    try:
+        delete_page_link_at_index(page, link_index)
+        insert_page_link(page, doc, pdf_bbox, link_kind, uri=uri, target_page=target_page)
+        save_session_doc(session_id)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        print(f"Link update error: {exc}", file=sys.stderr, flush=True)
+        return jsonify({"error": f"Failed to update link: {exc}"}), 500
+
+    page = doc[page_num]
+    links = extract_page_links(page, page_num=page_num)
+    updated = next((l for l in links if l.get("pdf_bbox") == pdf_bbox), links[-1] if links else None)
+    return jsonify({"success": True, "links": links, "link": updated})
+
+
+@app.route("/api/session/<session_id>/links", methods=["GET"])
+def document_links(session_id):
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    doc = entry["doc"]
+    all_links = []
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        all_links.extend(extract_page_links(page, page_num=page_num))
+
+    return jsonify({"links": all_links, "count": len(all_links)})
+
+
+@app.route("/api/page/<session_id>/<int:page_num>/ocr", methods=["POST"])
+def ocr_page(session_id, page_num):
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    doc = entry["doc"]
+    if page_num < 0 or page_num >= len(doc):
+        return jsonify({"error": "Page out of range"}), 400
+
+    body = request.get_json(silent=True) or {}
+    language = body.get("language", "eng")
+    page = doc[page_num]
+
+    try:
+        textpage = page.get_textpage_ocr(language=language)
+        text = page.get_text("text", textpage=textpage)
+    except Exception as exc:
+        return jsonify({
+            "error": "OCR unavailable. Install Tesseract OCR and language data on the server.",
+            "detail": str(exc),
+        }), 503
+
+    elements = []
+    try:
+        text_dict = page.get_text("dict", textpage=textpage, flags=fitz.TEXT_PRESERVE_WHITESPACE)
+        for block in text_dict.get("blocks", []):
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                line_spans = [span for span in line.get("spans", []) if span.get("text", "").strip()]
+                if not line_spans:
+                    continue
+                candidate = build_text_element_from_spans(page, line_spans, RENDER_SCALE)
+                if candidate:
+                    candidate["origin"] = "ocr"
+                    elements.append(candidate)
+    except Exception:
+        pass
+
+    return jsonify({
+        "success": True,
+        "text": text,
+        "elements": elements,
+        "language": language,
+    })
+
+
+@app.route("/api/page/<session_id>/<int:page_num>/tables", methods=["GET"])
+def page_tables(session_id, page_num):
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    doc = entry["doc"]
+    if page_num < 0 or page_num >= len(doc):
+        return jsonify({"error": "Page out of range"}), 400
+
+    page = doc[page_num]
+    tables_out = []
+
+    try:
+        finder = page.find_tables()
+        tables = getattr(finder, "tables", finder) or []
+        for idx, table in enumerate(tables):
+            bbox = table.bbox
+            pdf_bbox = [bbox.x0, bbox.y0, bbox.x1, bbox.y1]
+            rows = []
+            try:
+                rows = table.extract()
+            except Exception:
+                pass
+            markdown = ""
+            try:
+                markdown = table.to_markdown()
+            except Exception:
+                pass
+            tables_out.append({
+                "index": idx,
+                "bbox": scaled_view_bbox(page, pdf_bbox, RENDER_SCALE),
+                "pdf_bbox": pdf_bbox,
+                "row_count": getattr(table, "row_count", len(rows)),
+                "col_count": getattr(table, "col_count", 0),
+                "rows": rows,
+                "markdown": markdown,
+            })
+    except Exception as exc:
+        return jsonify({"error": f"Table detection failed: {exc}"}), 500
+
+    return jsonify({"tables": tables_out, "count": len(tables_out)})
+
+
+@app.route("/api/page/<session_id>/<int:page_num>/tables/export", methods=["GET"])
+def export_page_tables_csv(session_id, page_num):
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    doc = entry["doc"]
+    if page_num < 0 or page_num >= len(doc):
+        return jsonify({"error": "Page out of range"}), 400
+
+    page = doc[page_num]
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    table_index = 0
+
+    try:
+        finder = page.find_tables()
+        tables = getattr(finder, "tables", finder) or []
+        for table in tables:
+            writer.writerow([f"--- Table {table_index + 1} ---"])
+            try:
+                for row in table.extract():
+                    writer.writerow(row)
+            except Exception:
+                pass
+            writer.writerow([])
+            table_index += 1
+    except Exception as exc:
+        return jsonify({"error": f"Table export failed: {exc}"}), 500
+
+    data = buf.getvalue().encode("utf-8")
+    out = io.BytesIO(data)
+    out.seek(0)
+    return send_file(
+        out,
+        mimetype="text/csv; charset=utf-8",
+        as_attachment=True,
+        download_name=f"page-{page_num + 1}-tables.csv",
     )
 
 

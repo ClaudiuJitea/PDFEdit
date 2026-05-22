@@ -1,16 +1,37 @@
 const API = {
     baseUrl: '/api',
 
-    async uploadPDF(file) {
+    async uploadPDF(file, password = null) {
         const formData = new FormData();
         formData.append('file', file);
+        if (password) formData.append('password', password);
         const resp = await fetch(`${this.baseUrl}/upload`, {
             method: 'POST',
             body: formData,
         });
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({ error: 'Upload failed' }));
-            throw new Error(err.error || 'Upload failed');
+            const error = new Error(err.error || 'Upload failed');
+            error.passwordRequired = err.password_required;
+            throw error;
+        }
+        return resp.json();
+    },
+
+    async mergePDF(sessionId, file, password = null, position = 'end') {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('position', position);
+        if (password) formData.append('password', password);
+        const resp = await fetch(`${this.baseUrl}/session/${sessionId}/merge`, {
+            method: 'POST',
+            body: formData,
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'Merge failed' }));
+            const error = new Error(err.error || 'Merge failed');
+            error.passwordRequired = err.password_required;
+            throw error;
         }
         return resp.json();
     },
@@ -99,9 +120,11 @@ const API = {
         return resp.json();
     },
 
-    async exportPDF(sessionId) {
+    async exportPDF(sessionId, options = {}) {
         const resp = await fetch(`${this.baseUrl}/export/${sessionId}`, {
             method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(options),
         });
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({ error: 'Export failed' }));
@@ -110,14 +133,149 @@ const API = {
         return resp.blob();
     },
 
-    async exportPage(sessionId, pageNum) {
+    async exportPage(sessionId, pageNum, options = {}) {
         const resp = await fetch(`${this.baseUrl}/export/${sessionId}/${pageNum}`, {
             method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(options),
         });
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({ error: 'Failed to export page' }));
             throw new Error(err.error || 'Failed to export page');
         }
+        return resp.blob();
+    },
+
+    async exportPagePng(sessionId, pageNum, dpi = 150) {
+        const resp = await fetch(`${this.baseUrl}/export/${sessionId}/${pageNum}/png`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dpi }),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'Failed to export PNG' }));
+            throw new Error(err.error || 'Failed to export PNG');
+        }
+        return resp.blob();
+    },
+
+    async searchDocument(sessionId, query, page = null) {
+        const params = new URLSearchParams({ q: query });
+        if (page !== null && page !== undefined) params.set('page', String(page));
+        const resp = await fetch(`${this.baseUrl}/session/${sessionId}/search?${params.toString()}`);
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'Search failed' }));
+            throw new Error(err.error || 'Search failed');
+        }
+        return resp.json();
+    },
+
+    async getMetadata(sessionId) {
+        const resp = await fetch(`${this.baseUrl}/session/${sessionId}/metadata`);
+        if (!resp.ok) throw new Error('Failed to load metadata');
+        return resp.json();
+    },
+
+    async setMetadata(sessionId, metadata) {
+        const resp = await fetch(`${this.baseUrl}/session/${sessionId}/metadata`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ metadata }),
+        });
+        if (!resp.ok) throw new Error('Failed to save metadata');
+        return resp.json();
+    },
+
+    async getBookmarks(sessionId) {
+        const resp = await fetch(`${this.baseUrl}/session/${sessionId}/bookmarks`);
+        if (!resp.ok) throw new Error('Failed to load bookmarks');
+        return resp.json();
+    },
+
+    async setBookmarks(sessionId, bookmarks) {
+        const resp = await fetch(`${this.baseUrl}/session/${sessionId}/bookmarks`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bookmarks }),
+        });
+        if (!resp.ok) throw new Error('Failed to save bookmarks');
+        return resp.json();
+    },
+
+    async getPageLinks(sessionId, pageNum) {
+        const resp = await fetch(`${this.baseUrl}/page/${sessionId}/${pageNum}/links`);
+        if (!resp.ok) throw new Error('Failed to load links');
+        return resp.json();
+    },
+
+    async createPageLink(sessionId, pageNum, linkData) {
+        const resp = await fetch(`${this.baseUrl}/page/${sessionId}/${pageNum}/links`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(linkData),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'Failed to create link' }));
+            throw new Error(err.error || 'Failed to create link');
+        }
+        return resp.json();
+    },
+
+    async updatePageLink(sessionId, pageNum, linkIndex, linkData) {
+        const resp = await fetch(`${this.baseUrl}/page/${sessionId}/${pageNum}/links/${linkIndex}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(linkData),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'Failed to update link' }));
+            throw new Error(err.error || 'Failed to update link');
+        }
+        return resp.json();
+    },
+
+    async deletePageLink(sessionId, pageNum, linkIndex) {
+        const resp = await fetch(`${this.baseUrl}/page/${sessionId}/${pageNum}/links/${linkIndex}`, {
+            method: 'DELETE',
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'Failed to delete link' }));
+            throw new Error(err.error || 'Failed to delete link');
+        }
+        return resp.json();
+    },
+
+    async getDocumentLinks(sessionId) {
+        const resp = await fetch(`${this.baseUrl}/session/${sessionId}/links`);
+        if (!resp.ok) throw new Error('Failed to load document links');
+        return resp.json();
+    },
+
+    async ocrPage(sessionId, pageNum, language = 'eng') {
+        const resp = await fetch(`${this.baseUrl}/page/${sessionId}/${pageNum}/ocr`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ language }),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'OCR failed' }));
+            throw new Error(err.error || 'OCR failed');
+        }
+        return resp.json();
+    },
+
+    async getPageTables(sessionId, pageNum) {
+        const resp = await fetch(`${this.baseUrl}/page/${sessionId}/${pageNum}/tables`);
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'Failed to detect tables' }));
+            throw new Error(err.error || 'Failed to detect tables');
+        }
+        return resp.json();
+    },
+
+    async exportPageTablesCsv(sessionId, pageNum) {
+        const resp = await fetch(`${this.baseUrl}/page/${sessionId}/${pageNum}/tables/export`);
+        if (!resp.ok) throw new Error('Failed to export tables');
         return resp.blob();
     },
 

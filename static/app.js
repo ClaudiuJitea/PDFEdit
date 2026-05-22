@@ -19,6 +19,18 @@ class App {
         this.selectedFormXref = null;
         this.pendingPageLoad = null;
         this._currentStickyObj = null;
+        this.searchResults = [];
+        this.searchIndex = 0;
+        this.documentMode = false;
+        this._pendingUploadFile = null;
+        this._detectedTables = [];
+        this.pageLinks = [];
+        this.documentLinks = [];
+        this.selectedLink = null;
+        this.linkShowHighlights = true;
+        this.linkScope = 'page';
+        this.linkPreset = 'web';
+        this._linkDrawAreaMode = false;
     }
 
     init() {
@@ -46,7 +58,12 @@ class App {
     _attachEditorCallbacks() {
         this.editor.onObjectSelected = (objects) => {
             this._clearFormSelection(false);
-            this.toolbar.showPropertiesForObjects(objects);
+            if (this.toolbar.activeTool === 'link') {
+                this.toolbar.showLinkProperties();
+                this._updateLinkSelectedTextButton();
+            } else {
+                this.toolbar.showPropertiesForObjects(objects);
+            }
             if (objects && objects.length === 1 && objects[0]._elementType === 'sticky') {
                 this._showStickyPopup(objects[0]);
             } else {
@@ -60,11 +77,17 @@ class App {
         this.editor.onSelectionCleared = () => {
             this._hideCanvasContextMenu();
             this._hideStickyPopup();
+            if (this.toolbar.activeTool === 'link') {
+                this._updateLinkSelectedTextButton();
+            }
             if (!this.isLoading) {
                 this._showContextProperties();
             }
         };
         this.editor.onCanvasModified = () => this._pushUndo();
+        this.editor.onLinkAreaDrawn = (area) => this._onLinkAreaDrawn(area);
+        this.editor.onLinkOverlayClicked = (link) => this._selectLinkEntry(link);
+        this.editor.onLinkOverlayDoubleClicked = (link) => this._testLinkEntry(link);
     }
 
     _bindElements() {
@@ -128,6 +151,49 @@ class App {
             stickyPopup: document.getElementById('sticky-note-popup'),
             stickyPopupClose: document.getElementById('sticky-popup-close'),
             stickyPopupTextarea: document.getElementById('sticky-popup-textarea'),
+            btnMerge: document.getElementById('btn-merge'),
+            btnDocument: document.getElementById('btn-document'),
+            mergeFileInput: document.getElementById('merge-file-input'),
+            findInput: document.getElementById('find-input'),
+            btnFindPrev: document.getElementById('btn-find-prev'),
+            btnFindNext: document.getElementById('btn-find-next'),
+            findStatus: document.getElementById('find-status'),
+            exportModal: document.getElementById('export-modal'),
+            btnCancelExport: document.getElementById('btn-cancel-export'),
+            btnConfirmExport: document.getElementById('btn-confirm-export'),
+            exportFlatten: document.getElementById('export-flatten'),
+            exportSplitPages: document.getElementById('export-split-pages'),
+            exportFromPage: document.getElementById('export-from-page'),
+            exportToPage: document.getElementById('export-to-page'),
+            exportUserPassword: document.getElementById('export-user-password'),
+            exportOwnerPassword: document.getElementById('export-owner-password'),
+            passwordModal: document.getElementById('password-modal'),
+            pdfPasswordInput: document.getElementById('pdf-password-input'),
+            btnCancelPassword: document.getElementById('btn-cancel-password'),
+            btnConfirmPassword: document.getElementById('btn-confirm-password'),
+            btnExportPng: document.getElementById('btn-export-png'),
+            btnOcrPage: document.getElementById('btn-ocr-page'),
+            btnDetectTables: document.getElementById('btn-detect-tables'),
+            btnExportTables: document.getElementById('btn-export-tables'),
+            tablesOverlayInfo: document.getElementById('tables-overlay-info'),
+            tablesCountText: document.getElementById('tables-count-text'),
+            propStampType: document.getElementById('prop-stamp-type'),
+            propLinkKind: document.getElementById('prop-link-kind'),
+            propLinkUri: document.getElementById('prop-link-uri'),
+            propLinkUriLabel: document.getElementById('prop-link-uri-label'),
+            propLinkPage: document.getElementById('prop-link-page'),
+            propLinkUriGroup: document.getElementById('prop-link-uri-group'),
+            propLinkPageGroup: document.getElementById('prop-link-page-group'),
+            propLinkScope: document.getElementById('prop-link-scope'),
+            propLinkShowHighlights: document.getElementById('prop-link-show-highlights'),
+            btnLinkSelectedText: document.getElementById('btn-link-selected-text'),
+            btnLinkDrawArea: document.getElementById('btn-link-draw-area'),
+            btnLinkTest: document.getElementById('btn-link-test'),
+            linkPresetChips: document.getElementById('link-preset-chips'),
+            linkList: document.getElementById('link-list'),
+            linkListEmpty: document.getElementById('link-list-empty'),
+            btnSaveMetadata: document.getElementById('btn-save-metadata'),
+            btnSaveBookmarks: document.getElementById('btn-save-bookmarks'),
         };
     }
 
@@ -138,7 +204,89 @@ class App {
         this.els.btnNew.addEventListener('click', () => this._showNewPdfModal());
         this.els.btnNewZone.addEventListener('click', () => this._showNewPdfModal());
         this.els.btnSave.addEventListener('click', () => this._saveCurrentPage());
-        this.els.btnDownload.addEventListener('click', () => this._exportPDF());
+        this.els.btnDownload.addEventListener('click', () => this._showExportModal());
+        if (this.els.btnMerge) {
+            this.els.btnMerge.addEventListener('click', () => this.els.mergeFileInput.click());
+            this.els.mergeFileInput.addEventListener('change', (e) => this._onMergeFileSelected(e));
+        }
+        if (this.els.btnDocument) {
+            this.els.btnDocument.addEventListener('click', () => this._toggleDocumentPanel());
+        }
+        if (this.els.btnCancelExport) {
+            this.els.btnCancelExport.addEventListener('click', () => this._hideExportModal());
+            this.els.exportModal.querySelector('.modal-backdrop')?.addEventListener('click', () => this._hideExportModal());
+            this.els.btnConfirmExport.addEventListener('click', () => this._confirmExport());
+        }
+        if (this.els.btnCancelPassword) {
+            this.els.btnCancelPassword.addEventListener('click', () => this._hidePasswordModal());
+            this.els.passwordModal.querySelector('.modal-backdrop')?.addEventListener('click', () => this._hidePasswordModal());
+            this.els.btnConfirmPassword.addEventListener('click', () => this._confirmPasswordUpload());
+        }
+        if (this.els.findInput) {
+            this.els.findInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') this._runSearch(e.shiftKey);
+            });
+            this.els.btnFindNext?.addEventListener('click', () => this._runSearch(false));
+            this.els.btnFindPrev?.addEventListener('click', () => this._runSearch(true));
+        }
+        if (this.els.propStampType) {
+            this.els.propStampType.addEventListener('change', () => {
+                this.editor.setStampType(this.els.propStampType.value);
+            });
+        }
+        if (this.els.propLinkKind) {
+            this.els.propLinkKind.addEventListener('change', () => {
+                this._updateLinkPropVisibility();
+                if (this.els.propLinkKind.value === 'goto') {
+                    this._applyLinkPreset('page');
+                } else if (this.linkPreset === 'page') {
+                    this._applyLinkPreset('web');
+                }
+                if (this.selectedLink) this._updateSelectedLink();
+            });
+        }
+        if (this.els.propLinkUri) {
+            this.els.propLinkUri.addEventListener('change', () => {
+                if (this.selectedLink) this._updateSelectedLink();
+            });
+        }
+        if (this.els.propLinkPage) {
+            this.els.propLinkPage.addEventListener('change', () => {
+                if (this.selectedLink) this._updateSelectedLink();
+            });
+        }
+        this.els.btnLinkSelectedText?.addEventListener('click', () => this._linkSelectedText());
+        this.els.btnLinkDrawArea?.addEventListener('click', () => this._enableLinkDrawMode());
+        this.els.btnLinkTest?.addEventListener('click', () => this._testCurrentLinkTarget());
+        this.els.propLinkShowHighlights?.addEventListener('change', () => {
+            this.linkShowHighlights = this.els.propLinkShowHighlights.checked;
+            this._renderLinkHighlights();
+        });
+        this.els.propLinkScope?.addEventListener('change', () => {
+            this.linkScope = this.els.propLinkScope.value;
+            this._refreshLinkList();
+        });
+        this.els.linkPresetChips?.querySelectorAll('.prop-chip').forEach((chip) => {
+            chip.addEventListener('click', () => this._applyLinkPreset(chip.dataset.preset));
+        });
+        if (this.els.btnSaveMetadata) {
+            this.els.btnSaveMetadata.addEventListener('click', () => this._saveMetadata());
+        }
+        if (this.els.btnSaveBookmarks) {
+            this.els.btnSaveBookmarks.addEventListener('click', () => this._saveBookmarks());
+        }
+        if (this.els.btnExportPng) {
+            this.els.btnExportPng.addEventListener('click', () => this._exportCurrentPagePng());
+        }
+        if (this.els.btnOcrPage) {
+            this.els.btnOcrPage.addEventListener('click', () => this._ocrCurrentPage());
+        }
+        if (this.els.btnDetectTables) {
+            this.els.btnDetectTables.addEventListener('click', () => this._detectTablesOnPage());
+        }
+        if (this.els.btnExportTables) {
+            this.els.btnExportTables.addEventListener('click', () => this._exportTablesCsv());
+        }
         this.els.btnUndo.addEventListener('click', () => this._undo());
         this.els.btnRedo.addEventListener('click', () => this._redo());
         this.els.btnTheme.addEventListener('click', () => this._toggleTheme());
@@ -355,6 +503,12 @@ class App {
                 case 'x':
                     this._onToolChange('redaction');
                     break;
+                case 'p':
+                    this._onToolChange('stamp');
+                    break;
+                case 'k':
+                    this._onToolChange('link');
+                    break;
                 case 'delete':
                 case 'backspace':
                     if (this.toolbar.activeTool === 'forms') {
@@ -464,7 +618,7 @@ class App {
         e.target.value = '';
     }
 
-    async _uploadFile(file) {
+    async _uploadFile(file, password = null) {
         if (file.type !== 'application/pdf') {
             this._showToast('Please select a PDF file', 'error');
             return;
@@ -476,12 +630,40 @@ class App {
 
         try {
             this._showToast('Uploading PDF...', 'success');
-            const data = await API.uploadPDF(file);
+            const data = await API.uploadPDF(file, password);
+            this._hidePasswordModal();
             this._initSession(data);
             this._showToast('PDF loaded successfully', 'success');
         } catch (err) {
+            if (err.passwordRequired) {
+                this._pendingUploadFile = file;
+                this._showPasswordModal();
+                return;
+            }
             this._showToast(err.message, 'error');
         }
+    }
+
+    _showPasswordModal() {
+        if (!this.els.passwordModal) return;
+        this.els.pdfPasswordInput.value = '';
+        this.els.passwordModal.style.display = 'flex';
+        this.els.pdfPasswordInput.focus();
+    }
+
+    _hidePasswordModal() {
+        if (this.els.passwordModal) this.els.passwordModal.style.display = 'none';
+        this._pendingUploadFile = null;
+    }
+
+    async _confirmPasswordUpload() {
+        const file = this._pendingUploadFile;
+        const password = this.els.pdfPasswordInput.value;
+        if (!file || !password) {
+            this._showToast('Enter a password', 'error');
+            return;
+        }
+        await this._uploadFile(file, password);
     }
 
     _showNewPdfModal() {
@@ -534,6 +716,14 @@ class App {
         this.els.editorContainer.style.display = 'flex';
         this.els.btnSave.disabled = false;
         this.els.btnDownload.disabled = false;
+        if (this.els.btnMerge) this.els.btnMerge.disabled = false;
+        if (this.els.btnDocument) this.els.btnDocument.disabled = false;
+        if (this.els.findInput) {
+            this.els.findInput.disabled = false;
+            this.els.btnFindPrev.disabled = false;
+            this.els.btnFindNext.disabled = false;
+        }
+        this.documentMode = false;
         this.els.pageCountBadge.style.display = 'flex';
         this._updatePageInfo();
         this._updateUndoRedoButtons();
@@ -548,7 +738,12 @@ class App {
         const { preserveCurrentPage = false, fallbackPage = pageNum } = options;
         this.isLoading = true;
         this.editor.clearDeletedOriginals();
+        this.editor.clearSearchHighlights();
+        this.editor.clearTableOverlays();
+        this.editor.clearLinkOverlays();
         this.formLayer.clear();
+        if (this.els.tablesOverlayInfo) this.els.tablesOverlayInfo.style.display = 'none';
+        if (this.els.btnExportTables) this.els.btnExportTables.style.display = 'none';
 
         this.els.canvasLoading.style.display = 'flex';
         this.els.canvasError.style.display = 'none';
@@ -598,6 +793,7 @@ class App {
             }
 
             await this._loadPageForms(pageNum);
+            await this._loadPageLinks(pageNum);
 
             if (!preserveCurrentPage) {
                 this.currentPage = pageNum;
@@ -820,30 +1016,47 @@ class App {
         URL.revokeObjectURL(url);
     }
 
-    async _exportPDF() {
+    _showExportModal() {
+        if (!this.sessionId || !this.els.exportModal) return;
+        this.els.exportFromPage.value = 1;
+        this.els.exportToPage.value = this.pageCount;
+        this.els.exportFlatten.checked = false;
+        this.els.exportSplitPages.checked = false;
+        this.els.exportUserPassword.value = '';
+        this.els.exportOwnerPassword.value = '';
+        this.els.exportModal.style.display = 'flex';
+    }
+
+    _hideExportModal() {
+        if (this.els.exportModal) this.els.exportModal.style.display = 'none';
+    }
+
+    async _confirmExport() {
+        if (!this.sessionId) return;
+        this._hideExportModal();
+        await this._exportPDF({
+            flatten: this.els.exportFlatten.checked,
+            split_pages: this.els.exportSplitPages.checked,
+            from_page: parseInt(this.els.exportFromPage.value, 10) - 1,
+            to_page: parseInt(this.els.exportToPage.value, 10) - 1,
+            user_password: this.els.exportUserPassword.value || null,
+            owner_password: this.els.exportOwnerPassword.value || null,
+        });
+    }
+
+    async _exportPDF(options = {}) {
         if (!this.sessionId) return;
         this.els.btnDownload.disabled = true;
         const originalHTML = this.els.btnDownload.innerHTML;
         this.els.btnDownload.innerHTML = '<span class="spinner"></span><span>Exporting</span>';
 
         try {
-            const elements = this.editor.getObjects();
-            const deleted_originals = this.editor.getDeletedOriginals();
-            const forms = this.formLayer.getForms();
-            this.pageFormStates[this.currentPage] = forms;
-            await API.savePage(this.sessionId, this.currentPage, elements, deleted_originals, forms);
+            await this._saveAllPagesBeforeExport();
 
-            const blob = await API.exportPDF(this.sessionId);
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'edited.pdf';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-
-            this._showToast('PDF downloaded', 'success');
+            const blob = await API.exportPDF(this.sessionId, options);
+            const filename = options.split_pages ? 'pages.zip' : 'edited.pdf';
+            this._downloadBlob(blob, filename);
+            this._showToast(options.split_pages ? 'ZIP downloaded' : 'PDF downloaded', 'success');
         } catch (err) {
             this._showToast(err.message, 'error');
         } finally {
@@ -851,6 +1064,14 @@ class App {
             this.els.btnDownload.innerHTML = originalHTML;
             lucide.createIcons();
         }
+    }
+
+    async _saveAllPagesBeforeExport() {
+        const elements = this.editor.getObjects();
+        const deleted_originals = this.editor.getDeletedOriginals();
+        const forms = this.formLayer.getForms();
+        this.pageFormStates[this.currentPage] = forms;
+        await API.savePage(this.sessionId, this.currentPage, elements, deleted_originals, forms);
     }
 
     _pushUndo() {
@@ -889,6 +1110,34 @@ class App {
     }
 
     _onToolChange(tool) {
+        this.documentMode = false;
+
+        if (this.toolbar.activeTool === 'link' && tool !== 'link') {
+            this.editor.clearLinkOverlays();
+            this._linkDrawAreaMode = false;
+        }
+
+        if (tool === 'stamp') {
+            this.toolbar.setActiveTool('stamp');
+            this.editor.setTool('stamp');
+            this.editor.setStampType(this.els.propStampType?.value || 'approved');
+            this.formLayer.setInteractive(false);
+            this.toolbar.showStampProperties();
+            return;
+        }
+
+        if (tool === 'link') {
+            this.toolbar.setActiveTool('link');
+            this.editor.setTool('link');
+            this.editor.setLinkDrawMode(this._linkDrawAreaMode);
+            this.formLayer.setInteractive(false);
+            this.toolbar.showLinkProperties();
+            this._updateLinkPropVisibility();
+            this._updateLinkSelectedTextButton();
+            this._refreshLinkList();
+            return;
+        }
+
         if (tool === 'signature') {
             this.toolbar.setActiveTool('signature');
             this.editor.setTool('select');
@@ -955,6 +1204,20 @@ class App {
     }
 
     _showContextProperties() {
+        if (this.documentMode) {
+            return;
+        }
+
+        if (this.toolbar.activeTool === 'stamp') {
+            this.toolbar.showStampProperties();
+            return;
+        }
+
+        if (this.toolbar.activeTool === 'link') {
+            this.toolbar.showLinkProperties();
+            return;
+        }
+
         if (this.toolbar.activeTool === 'signature') {
             this.toolbar._hideAllProps();
             const sigProps = document.getElementById('props-signature');
@@ -1152,9 +1415,14 @@ class App {
                 break;
             case 'rx':
                 obj.set('rx', value);
+                obj.set('ry', value);
                 break;
             case 'ry':
                 obj.set('ry', value);
+                break;
+            case 'lineStyle':
+                obj.lineStyle = value;
+                obj.strokeDashArray = this.editor.getDashArrayForStyle(value, obj.strokeWidth || 2);
                 break;
         }
     }
@@ -1728,6 +1996,501 @@ class App {
             }
 
             this._showToast(`Page rotated ${degrees}°`, 'success');
+        } catch (err) {
+            this._showToast(err.message, 'error');
+        }
+    }
+
+    async _onMergeFileSelected(e) {
+        const file = e.target.files[0];
+        e.target.value = '';
+        if (!file || !this.sessionId) return;
+        try {
+            const result = await API.mergePDF(this.sessionId, file);
+            this.pageCount = result.page_count;
+            this.pageSizes = result.page_sizes || this.pageSizes;
+            this._updatePageInfo();
+            this._renderThumbnails();
+            this._showToast('PDF merged', 'success');
+        } catch (err) {
+            this._showToast(err.message, 'error');
+        }
+    }
+
+    async _toggleDocumentPanel() {
+        this.documentMode = !this.documentMode;
+        if (!this.documentMode) {
+            this._showContextProperties();
+            return;
+        }
+        try {
+            const meta = await API.getMetadata(this.sessionId);
+            const bm = await API.getBookmarks(this.sessionId);
+            this.toolbar.showDocumentProperties(meta.metadata || {}, bm.bookmarks || []);
+        } catch (err) {
+            this._showToast(err.message, 'error');
+        }
+    }
+
+    async _saveMetadata() {
+        if (!this.sessionId) return;
+        const metadata = {
+            title: document.getElementById('meta-title').value,
+            author: document.getElementById('meta-author').value,
+            subject: document.getElementById('meta-subject').value,
+            keywords: document.getElementById('meta-keywords').value,
+        };
+        try {
+            await API.setMetadata(this.sessionId, metadata);
+            this._showToast('Metadata saved', 'success');
+        } catch (err) {
+            this._showToast(err.message, 'error');
+        }
+    }
+
+    async _saveBookmarks() {
+        if (!this.sessionId) return;
+        const text = document.getElementById('meta-bookmarks').value || '';
+        const bookmarks = text.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
+            const parts = line.split('|');
+            return {
+                level: parseInt(parts[0], 10) || 1,
+                title: parts[1] || 'Section',
+                page: Math.max(0, (parseInt(parts[2], 10) || 1) - 1),
+            };
+        });
+        try {
+            await API.setBookmarks(this.sessionId, bookmarks);
+            this._showToast('Bookmarks saved', 'success');
+        } catch (err) {
+            this._showToast(err.message, 'error');
+        }
+    }
+
+    _updateLinkPropVisibility() {
+        const kind = this.els.propLinkKind?.value || 'uri';
+        if (this.els.propLinkUriGroup) {
+            this.els.propLinkUriGroup.style.display = kind === 'uri' ? 'block' : 'none';
+        }
+        if (this.els.propLinkPageGroup) {
+            this.els.propLinkPageGroup.style.display = kind === 'goto' ? 'block' : 'none';
+        }
+        if (this.els.propLinkUriLabel) {
+            const labels = { web: 'URL', email: 'Email', phone: 'Phone number' };
+            this.els.propLinkUriLabel.textContent = labels[this.linkPreset] || 'URL';
+        }
+        if (this.els.btnLinkTest) {
+            this.els.btnLinkTest.disabled = kind === 'goto' && !this.selectedLink;
+        }
+    }
+
+    _applyLinkPreset(preset) {
+        this.linkPreset = preset;
+        this.els.linkPresetChips?.querySelectorAll('.prop-chip').forEach((chip) => {
+            chip.classList.toggle('active', chip.dataset.preset === preset);
+        });
+
+        if (preset === 'page') {
+            this.els.propLinkKind.value = 'goto';
+            if (this.els.propLinkPage && !this.els.propLinkPage.value) {
+                this.els.propLinkPage.value = String(this.currentPage + 1);
+            }
+        } else {
+            this.els.propLinkKind.value = 'uri';
+            if (this.els.propLinkUri) {
+                const placeholders = {
+                    web: 'https://example.com',
+                    email: 'name@example.com',
+                    phone: '+1 555 0100',
+                };
+                this.els.propLinkUri.placeholder = placeholders[preset] || 'https://example.com';
+            }
+        }
+        this._updateLinkPropVisibility();
+    }
+
+    _updateLinkSelectedTextButton() {
+        const hasText = !!this.editor.getSelectedTextLinkArea();
+        if (this.els.btnLinkSelectedText) {
+            this.els.btnLinkSelectedText.disabled = !hasText;
+            this.els.btnLinkSelectedText.classList.toggle('primary', hasText && !this._linkDrawAreaMode);
+        }
+        if (this.els.btnLinkDrawArea) {
+            this.els.btnLinkDrawArea.classList.toggle('primary', this._linkDrawAreaMode || !hasText);
+        }
+    }
+
+    _enableLinkDrawMode() {
+        this._linkDrawAreaMode = true;
+        this.editor.setLinkDrawMode(true);
+        this._updateLinkSelectedTextButton();
+        this._showToast('Draw a rectangle on the page for the link area', 'info');
+    }
+
+    _buildLinkPayload(area) {
+        const kind = this.els.propLinkKind?.value || 'uri';
+        const payload = {
+            pdf_bbox: area.pdf_bbox,
+            bbox: area.bbox,
+            kind,
+        };
+
+        if (kind === 'goto') {
+            payload.page = Math.max(0, parseInt(this.els.propLinkPage?.value || '1', 10) - 1);
+        } else {
+            const uri = (this.els.propLinkUri?.value || '').trim();
+            if (!uri) {
+                throw new Error('Enter a destination in the link panel');
+            }
+            payload.uri = uri;
+        }
+        return payload;
+    }
+
+    async _createLinkFromArea(area, pageNum = this.currentPage) {
+        if (!this.sessionId) return null;
+        const payload = this._buildLinkPayload(area);
+        const result = await API.createPageLink(this.sessionId, pageNum, payload);
+        if (pageNum === this.currentPage) {
+            this.pageLinks = result.links || [];
+        }
+        await this._refreshLinkList();
+        this._renderLinkHighlights();
+        const label = result.link?.uri || (result.link?.page != null ? `page ${result.link.page + 1}` : 'link');
+        this._showToast(`Link added (${label})`, 'success');
+        if (result.link) this._selectLinkEntry(result.link, pageNum);
+        this._linkDrawAreaMode = false;
+        this.editor.setLinkDrawMode(false);
+        this._updateLinkSelectedTextButton();
+        return result;
+    }
+
+    async _linkSelectedText() {
+        const area = this.editor.getSelectedTextLinkArea();
+        if (!area) {
+            this._showToast('Select a text object first', 'error');
+            return;
+        }
+        try {
+            await this._createLinkFromArea(area);
+        } catch (err) {
+            this._showToast(err.message, 'error');
+        }
+    }
+
+    _getLinksForList() {
+        return this.linkScope === 'document' ? this.documentLinks : this.pageLinks;
+    }
+
+    async _refreshLinkList() {
+        if (!this.sessionId) return;
+
+        try {
+            const pageData = await API.getPageLinks(this.sessionId, this.currentPage);
+            this.pageLinks = pageData.links || [];
+        } catch (err) {
+            console.warn('Failed to load page links:', err);
+            this.pageLinks = [];
+        }
+
+        if (this.linkScope === 'document') {
+            try {
+                const docData = await API.getDocumentLinks(this.sessionId);
+                this.documentLinks = docData.links || [];
+            } catch (err) {
+                console.warn('Failed to load document links:', err);
+                this.documentLinks = [];
+            }
+        }
+
+        const listLinks = this._getLinksForList();
+        this.toolbar.renderLinkList(listLinks, {
+            scope: this.linkScope,
+            selectedPage: this.selectedLink?.page_num ?? this.currentPage,
+            selectedLinkIndex: this.selectedLink?.index ?? null,
+            onSelect: (link) => this._selectLinkEntry(link),
+            onDelete: (link) => this._deleteLinkEntry(link),
+            onJump: (link) => this._jumpToLinkEntry(link),
+        });
+
+        if (this.toolbar.activeTool === 'link') {
+            this._renderLinkHighlights();
+        }
+    }
+
+    async _loadPageLinks(pageNum) {
+        if (!this.sessionId) return;
+        try {
+            const data = await API.getPageLinks(this.sessionId, pageNum);
+            this.pageLinks = data.links || [];
+            if (this.toolbar.activeTool === 'link') {
+                await this._refreshLinkList();
+            }
+        } catch (err) {
+            console.warn('Failed to load page links:', err);
+            this.pageLinks = [];
+            if (this.toolbar.activeTool === 'link') {
+                this.editor.clearLinkOverlays();
+            }
+        }
+    }
+
+    _renderLinkHighlights() {
+        if (!this.linkShowHighlights || this.toolbar.activeTool !== 'link') {
+            this.editor.clearLinkOverlays();
+            return;
+        }
+        const links = this.pageLinks;
+        const listIndex = links.findIndex((l) =>
+            this.selectedLink &&
+            l.index === this.selectedLink.index &&
+            (this.selectedLink.page_num == null || l.page_num === this.selectedLink.page_num)
+        );
+        this.editor.showLinkOverlays(links, {
+            visible: true,
+            selectedListIndex: listIndex >= 0 ? listIndex : null,
+            selectedLinkIndex: this.selectedLink?.index ?? null,
+        });
+    }
+
+    _populateLinkForm(link) {
+        if (!link) return;
+        const isGoto = link.link_type === 'goto' || (link.page != null && !link.uri);
+        if (isGoto) {
+            this._applyLinkPreset('page');
+            this.els.propLinkPage.value = String((link.page ?? 0) + 1);
+        } else {
+            const uri = link.uri || '';
+            if (uri.toLowerCase().startsWith('mailto:')) {
+                this._applyLinkPreset('email');
+                this.els.propLinkUri.value = uri.replace(/^mailto:/i, '');
+            } else if (uri.toLowerCase().startsWith('tel:')) {
+                this._applyLinkPreset('phone');
+                this.els.propLinkUri.value = uri.replace(/^tel:/i, '');
+            } else {
+                this._applyLinkPreset('web');
+                this.els.propLinkUri.value = uri;
+            }
+        }
+        this._updateLinkPropVisibility();
+    }
+
+    async _selectLinkEntry(link, pageNum = link.page_num ?? this.currentPage) {
+        if (pageNum !== this.currentPage) {
+            await this._goToPage(pageNum);
+        }
+        this.selectedLink = { ...link, page_num: pageNum };
+        this._populateLinkForm(link);
+        this.toolbar.renderLinkList(this._getLinksForList(), {
+            scope: this.linkScope,
+            selectedPage: pageNum,
+            selectedLinkIndex: link.index,
+            onSelect: (l) => this._selectLinkEntry(l),
+            onDelete: (l) => this._deleteLinkEntry(l),
+            onJump: (l) => this._jumpToLinkEntry(l),
+        });
+        this.editor.refreshLinkOverlaySelection(
+            this.pageLinks.findIndex((l) => l.index === link.index),
+            link.index
+        );
+    }
+
+    async _deleteLinkEntry(link) {
+        if (!this.sessionId || link.index == null) return;
+        const pageNum = link.page_num ?? this.currentPage;
+        try {
+            await API.deletePageLink(this.sessionId, pageNum, link.index);
+            if (this.selectedLink?.index === link.index && (this.selectedLink?.page_num ?? pageNum) === pageNum) {
+                this.selectedLink = null;
+            }
+            await this._refreshLinkList();
+            this._showToast('Link removed', 'success');
+        } catch (err) {
+            this._showToast(err.message, 'error');
+        }
+    }
+
+    async _updateSelectedLink() {
+        if (!this.sessionId || !this.selectedLink || this.selectedLink.index == null) return;
+        const pageNum = this.selectedLink.page_num ?? this.currentPage;
+        try {
+            const payload = {
+                kind: this.els.propLinkKind?.value || 'uri',
+                pdf_bbox: this.selectedLink.pdf_bbox,
+                bbox: this.selectedLink.bbox,
+            };
+            if (payload.kind === 'goto') {
+                payload.page = Math.max(0, parseInt(this.els.propLinkPage?.value || '1', 10) - 1);
+            } else {
+                payload.uri = (this.els.propLinkUri?.value || '').trim();
+            }
+            const result = await API.updatePageLink(this.sessionId, pageNum, this.selectedLink.index, payload);
+            if (pageNum === this.currentPage) {
+                this.pageLinks = result.links || [];
+            }
+            const updated = result.link || result.links?.find((l) => l.index === this.selectedLink.index);
+            if (updated) this.selectedLink = { ...updated, page_num: pageNum };
+            await this._refreshLinkList();
+            this._showToast('Link updated', 'success');
+        } catch (err) {
+            this._showToast(err.message, 'error');
+        }
+    }
+
+    _resolveLinkHref(link) {
+        const isGoto = link.link_type === 'goto' || (link.page != null && !link.uri);
+        if (isGoto) return null;
+        let uri = (link.uri || '').trim();
+        if (!uri) return null;
+        const lower = uri.toLowerCase();
+        if (!lower.startsWith('http://') && !lower.startsWith('https://') &&
+            !lower.startsWith('mailto:') && !lower.startsWith('tel:')) {
+            if (uri.includes('@')) uri = `mailto:${uri}`;
+            else if (/^[\d\s+\-()]+$/.test(uri)) uri = `tel:${uri}`;
+            else uri = `https://${uri}`;
+        }
+        return uri;
+    }
+
+    _testLinkEntry(link) {
+        const isGoto = link.link_type === 'goto' || (link.page != null && !link.uri);
+        if (isGoto) {
+            this._jumpToLinkEntry(link);
+            return;
+        }
+        const href = this._resolveLinkHref(link);
+        if (!href) {
+            this._showToast('No URL to open', 'error');
+            return;
+        }
+        window.open(href, '_blank', 'noopener,noreferrer');
+    }
+
+    _testCurrentLinkTarget() {
+        if (this.selectedLink) {
+            this._testLinkEntry(this.selectedLink);
+            return;
+        }
+        const kind = this.els.propLinkKind?.value || 'uri';
+        if (kind === 'goto') {
+            const page = Math.max(0, parseInt(this.els.propLinkPage?.value || '1', 10) - 1);
+            this._goToPage(page);
+            return;
+        }
+        const uri = (this.els.propLinkUri?.value || '').trim();
+        if (!uri) {
+            this._showToast('Enter a URL first', 'error');
+            return;
+        }
+        this._testLinkEntry({ uri, link_type: 'uri' });
+    }
+
+    async _jumpToLinkEntry(link) {
+        const isGoto = link.link_type === 'goto' || (link.page != null && !link.uri);
+        if (isGoto && link.page != null) {
+            await this._goToPage(link.page);
+            return;
+        }
+        const pageNum = link.page_num ?? this.currentPage;
+        await this._selectLinkEntry(link, pageNum);
+    }
+
+    async _onLinkAreaDrawn(area) {
+        if (!this.sessionId) return;
+        try {
+            await this._createLinkFromArea(area);
+        } catch (err) {
+            this._showToast(err.message, 'error');
+        }
+    }
+
+    async _runSearch(reverse = false) {
+        if (!this.sessionId || !this.els.findInput) return;
+        const query = this.els.findInput.value.trim();
+        if (!query) return;
+
+        try {
+            if (!this.searchResults.length || this._lastSearchQuery !== query) {
+                const data = await API.searchDocument(this.sessionId, query);
+                this.searchResults = data.results || [];
+                this.searchIndex = 0;
+                this._lastSearchQuery = query;
+            } else if (reverse) {
+                this.searchIndex = (this.searchIndex - 1 + this.searchResults.length) % this.searchResults.length;
+            } else {
+                this.searchIndex = (this.searchIndex + 1) % this.searchResults.length;
+            }
+
+            if (!this.searchResults.length) {
+                this.els.findStatus.textContent = 'No matches';
+                this.editor.clearSearchHighlights();
+                return;
+            }
+
+            const match = this.searchResults[this.searchIndex];
+            if (match.page !== this.currentPage) {
+                await this._goToPage(match.page);
+            }
+            const pageMatches = this.searchResults.filter((r) => r.page === this.currentPage);
+            this.editor.showSearchHighlights(pageMatches, pageMatches.indexOf(match));
+            this.els.findStatus.textContent = `${this.searchIndex + 1} / ${this.searchResults.length}`;
+        } catch (err) {
+            this._showToast(err.message, 'error');
+        }
+    }
+
+    async _exportCurrentPagePng() {
+        if (!this.sessionId) return;
+        try {
+            await this._saveCurrentPage();
+            const blob = await API.exportPagePng(this.sessionId, this.currentPage);
+            this._downloadBlob(blob, `page-${this.currentPage + 1}.png`);
+            this._showToast('PNG exported', 'success');
+        } catch (err) {
+            this._showToast(err.message, 'error');
+        }
+    }
+
+    async _ocrCurrentPage() {
+        if (!this.sessionId) return;
+        try {
+            this._showToast('Running OCR...', 'success');
+            const result = await API.ocrPage(this.sessionId, this.currentPage);
+            if (result.elements?.length) {
+                await this.editor.loadElements(result.elements);
+                this._pushUndo();
+            }
+            this._showToast('OCR complete — text elements added', 'success');
+        } catch (err) {
+            this._showToast(err.message, 'error');
+        }
+    }
+
+    async _detectTablesOnPage() {
+        if (!this.sessionId) return;
+        try {
+            const data = await API.getPageTables(this.sessionId, this.currentPage);
+            this._detectedTables = data.tables || [];
+            this.editor.showTableOverlays(this._detectedTables);
+            if (this.els.tablesOverlayInfo) {
+                this.els.tablesOverlayInfo.style.display = 'block';
+                this.els.tablesCountText.textContent = `${data.count} table${data.count === 1 ? '' : 's'} detected`;
+            }
+            if (this.els.btnExportTables) {
+                this.els.btnExportTables.style.display = data.count > 0 ? 'inline-flex' : 'none';
+            }
+            this._showToast(`${data.count} table(s) found`, 'success');
+        } catch (err) {
+            this._showToast(err.message, 'error');
+        }
+    }
+
+    async _exportTablesCsv() {
+        if (!this.sessionId) return;
+        try {
+            const blob = await API.exportPageTablesCsv(this.sessionId, this.currentPage);
+            this._downloadBlob(blob, `page-${this.currentPage + 1}-tables.csv`);
+            this._showToast('Tables exported', 'success');
         } catch (err) {
             this._showToast(err.message, 'error');
         }

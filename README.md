@@ -13,7 +13,15 @@ A web-based PDF editor built with **Python (Flask)**, **PyMuPDF**, and **Vanilla
 - **Image Support** - Insert and reposition images on any page
 - **Annotations** - Highlights and redactions with color options
 - **Page Management** - Thumbnails, page navigation, add/delete/duplicate/reorder/rotate pages
-- **Export** - Download the edited PDF (full document or individual pages), with optional form flattening
+- **Export** - Download PDF with optional form flattening, password protection, page ranges, or split ZIP
+- **Find in document** - Search text across all pages with highlighted matches
+- **Merge PDFs** - Append another PDF to the current document
+- **Document metadata & bookmarks** - Edit title, author, and outline/bookmarks
+- **Hyperlinks** - Add URL or internal page links
+- **Stamps** - Place Approved, Draft, Confidential, or VOID stamps
+- **OCR** - Recognize text on scanned pages (requires Tesseract on server)
+- **Table detection** - Find tables and export as CSV
+- **Export PNG** - Export current page as a high-resolution image
 
 ## Tech Stack
 
@@ -55,7 +63,13 @@ PDFEdit/
    cd PDFEdit
    ```
 
-2. **Create a virtual environment** (recommended):
+2. **Create and activate a Conda environment** (recommended on this project):
+   ```bash
+   conda create -n myenv python=3.11 -y
+   conda activate myenv
+   ```
+
+   Alternatively, use a Python venv:
    ```bash
    python -m venv venv
    source venv/bin/activate    # Linux/macOS
@@ -67,8 +81,9 @@ PDFEdit/
    pip install -r requirements.txt
    ```
 
-4. **Run the application**:
+4. **Run the application** (with `myenv` active):
    ```bash
+   conda activate myenv   # if not already active
    python app.py
    ```
 
@@ -91,8 +106,17 @@ PDFEdit/
 | `/api/page/<session>/move` | POST | Reorder pages |
 | `/api/page/<session>/<page>` | DELETE | Delete a page |
 | `/api/page/<session>/<page>/text` | GET | Extract page text |
-| `/api/export/<session>` | POST | Export full PDF |
+| `/api/export/<session>` | POST | Export full PDF (JSON: flatten, passwords, page range, split) |
 | `/api/export/<session>/<page>` | POST | Export single page as PDF |
+| `/api/export/<session>/<page>/png` | POST | Export page as PNG |
+| `/api/session/<session>/merge` | POST | Merge another PDF |
+| `/api/session/<session>/metadata` | GET/PUT | Document metadata |
+| `/api/session/<session>/bookmarks` | GET/PUT | Outline / bookmarks |
+| `/api/session/<session>/search` | GET | Search document text |
+| `/api/page/<session>/<page>/links` | GET/POST | Page hyperlinks |
+| `/api/page/<session>/<page>/ocr` | POST | OCR scanned page |
+| `/api/page/<session>/<page>/tables` | GET | Detect tables |
+| `/api/page/<session>/<page>/tables/export` | GET | Export tables CSV |
 | `/api/session/<session>` | DELETE | Clean up session |
 
 ## License

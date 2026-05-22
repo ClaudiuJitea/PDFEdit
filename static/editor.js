@@ -62,14 +62,17 @@ class PDFEditor {
         this.onCanvasModified = null;
         this.onContextMenuRequested = null;
         this.onStickyDoubleClicked = null;
+        this.onLinkAreaDrawn = null;
         this.arrowMode = false;
         this.deletedOriginals = [];
+        this.stampType = 'approved';
         this.brushSettings = {
             color: '#01696f',
             width: 2,
             opacity: 1,
             lineStyle: 'solid',
         };
+        this._linkDrawMode = false;
     }
 
     init(canvasEl, width, height) {
@@ -108,7 +111,25 @@ class PDFEditor {
                 e.target._modified = true;
             }
         });
-        this.canvas.on('path:created', () => {
+        this.canvas.on('path:created', (e) => {
+            const path = e.path;
+            if (path) {
+                path._elementType = 'path';
+                const scale = this.pdfScale;
+                const inkPoints = [];
+                if (path.path) {
+                    path.path.forEach((seg) => {
+                        if (seg[0] === 'M' || seg[0] === 'L') {
+                            inkPoints.push([
+                                (path.left + seg[1]) / scale,
+                                (path.top + seg[2]) / scale,
+                            ]);
+                        }
+                    });
+                }
+                path._inkPoints = inkPoints;
+                path.lineStyle = this.brushSettings.lineStyle;
+            }
             if (this.onCanvasModified) this.onCanvasModified();
         });
 
@@ -136,8 +157,12 @@ class PDFEditor {
     }
 
     _getBrushDashArray() {
-        const w = Math.max(1, this.brushSettings.width);
-        switch (this.brushSettings.lineStyle) {
+        return this.getDashArrayForStyle(this.brushSettings.lineStyle, this.brushSettings.width);
+    }
+
+    getDashArrayForStyle(style, width) {
+        const w = Math.max(1, width);
+        switch (style) {
             case 'dashed': return [w * 3, w * 2];
             case 'dotted': return [w * 0.8, w * 1.5];
             default: return null;
@@ -191,6 +216,8 @@ class PDFEditor {
         } else if (tool === 'eraser') {
             this._deleteSelected();
             return;
+        } else if (tool === 'link') {
+            this._syncLinkToolInteractivity();
         } else {
             this.canvas.selection = false;
             this.canvas.discardActiveObject();
@@ -200,6 +227,43 @@ class PDFEditor {
             });
             this.canvas.renderAll();
         }
+    }
+
+    _isTextLinkTarget(obj) {
+        if (!obj || obj._isLinkOverlay) return false;
+        const textTypes = ['text', 'i-text', 'textbox'];
+        return textTypes.includes(obj._elementType) || textTypes.includes(obj.type);
+    }
+
+    _syncLinkToolInteractivity() {
+        if (!this.canvas || this.currentTool !== 'link') return;
+
+        if (this._linkDrawMode) {
+            this.canvas.selection = false;
+            this.canvas.discardActiveObject();
+            this.canvas.defaultCursor = this._getCursor('link');
+            this.canvas.hoverCursor = this._getCursor('link');
+            this.canvas.forEachObject((obj) => {
+                if (obj._isLinkOverlay) return;
+                obj.selectable = false;
+                obj.evented = false;
+            });
+        } else {
+            this.canvas.selection = true;
+            this.canvas.defaultCursor = 'text';
+            this.canvas.hoverCursor = 'text';
+            this.canvas.forEachObject((obj) => {
+                if (obj._isLinkOverlay) {
+                    obj.selectable = false;
+                    obj.evented = true;
+                    return;
+                }
+                const isText = this._isTextLinkTarget(obj);
+                obj.selectable = isText;
+                obj.evented = isText;
+            });
+        }
+        this.canvas.renderAll();
     }
 
     _getCursor(tool) {
@@ -216,6 +280,8 @@ class PDFEditor {
             highlight: 'crosshair',
             sticky: 'crosshair',
             redaction: 'crosshair',
+            stamp: 'crosshair',
+            link: 'crosshair',
             eraser: 'pointer',
         };
         return cursors[tool] || 'default';
@@ -229,6 +295,7 @@ class PDFEditor {
 
         if (this.canvas.isDrawingMode) return;
         if (this.currentTool === 'select' || this.currentTool === 'forms' || this.currentTool === 'eraser') return;
+        if (this.currentTool === 'link' && !this._linkDrawMode) return;
 
         const pointer = this.canvas.getPointer(opt.e);
         this.startX = pointer.x;
@@ -265,6 +332,17 @@ class PDFEditor {
             case 'redaction':
                 this.drawingShape = this._createRedaction(pointer.x, pointer.y);
                 break;
+            case 'stamp':
+                this._placeStamp(pointer.x, pointer.y);
+                this.isDrawing = false;
+                break;
+            case 'link':
+                if (this._linkDrawMode === false) {
+                    this.isDrawing = false;
+                    break;
+                }
+                this.drawingShape = this._createLinkArea(pointer.x, pointer.y);
+                break;
         }
     }
 
@@ -275,7 +353,7 @@ class PDFEditor {
         const dx = pointer.x - this.startX;
         const dy = pointer.y - this.startY;
 
-        if (this.currentTool === 'rect' || this.currentTool === 'highlight' || this.currentTool === 'redaction') {
+        if (['rect', 'highlight', 'redaction', 'link'].includes(this.currentTool)) {
             const left = Math.min(this.startX, pointer.x);
             const top = Math.min(this.startY, pointer.y);
             const width = Math.abs(dx);
@@ -315,11 +393,19 @@ class PDFEditor {
 
         if (this.drawingShape) {
             this.drawingShape.setCoords();
-            this.canvas.setActiveObject(this.drawingShape);
 
-            if (this.drawingShape._isRedaction) {
-                this.drawingShape.selectable = true;
-                this.drawingShape.evented = true;
+            if (this.currentTool === 'link' && this.onLinkAreaDrawn) {
+                const bounds = this.drawingShape.getBoundingRect(true, true);
+                const pdf_bbox = this.canvasBoundsToPdfBbox(bounds);
+                const canvas_bbox = this.canvasBoundsToCanvasBbox(bounds);
+                this.canvas.remove(this.drawingShape);
+                this.onLinkAreaDrawn({ pdf_bbox, bbox: canvas_bbox });
+            } else {
+                this.canvas.setActiveObject(this.drawingShape);
+                if (this.drawingShape._isRedaction) {
+                    this.drawingShape.selectable = true;
+                    this.drawingShape.evented = true;
+                }
             }
 
             this.drawingShape = null;
@@ -561,6 +647,130 @@ class PDFEditor {
         });
         this.canvas.add(rect);
         return rect;
+    }
+
+    _placeStamp(x, y) {
+        const labels = {
+            approved: 'APPROVED',
+            draft: 'DRAFT',
+            confidential: 'CONFIDENTIAL',
+            void: 'VOID',
+        };
+        const text = labels[this.stampType] || 'APPROVED';
+        const w = 120 * this.pdfScale;
+        const h = 40 * this.pdfScale;
+        const rect = new fabric.Rect({
+            width: w,
+            height: h,
+            fill: 'rgba(255, 0, 0, 0.08)',
+            stroke: '#cc0000',
+            strokeWidth: 2,
+            originX: 'center',
+            originY: 'center',
+        });
+        const label = new fabric.Text(text, {
+            fontSize: 16 * this.pdfScale,
+            fill: '#cc0000',
+            fontFamily: 'Helvetica',
+            fontWeight: 'bold',
+            originX: 'center',
+            originY: 'center',
+        });
+        const group = new fabric.Group([rect, label], {
+            left: x - w / 2,
+            top: y - h / 2,
+            _elementType: 'stamp',
+            stampType: this.stampType,
+            stampText: text,
+        });
+        this.canvas.add(group);
+        this.canvas.setActiveObject(group);
+    }
+
+    _createLinkArea(x, y) {
+        const rect = new fabric.Rect({
+            left: x,
+            top: y,
+            width: 0,
+            height: 0,
+            fill: 'rgba(0, 100, 255, 0.15)',
+            stroke: '#0066cc',
+            strokeWidth: 1,
+            strokeDashArray: [4, 4],
+            _elementType: 'link-area',
+            selectable: false,
+            evented: false,
+        });
+        this.canvas.add(rect);
+        return rect;
+    }
+
+    setStampType(type) {
+        this.stampType = type || 'approved';
+    }
+
+    showSearchHighlights(matches, activeIndex = 0) {
+        this.clearSearchHighlights();
+        this._searchHighlights = [];
+        matches.forEach((match, index) => {
+            const bbox = match.bbox;
+            if (!bbox || bbox.length < 4) return;
+            const rect = new fabric.Rect({
+                left: bbox[0],
+                top: bbox[1],
+                width: bbox[2] - bbox[0],
+                height: bbox[3] - bbox[1],
+                fill: index === activeIndex ? 'rgba(255, 200, 0, 0.45)' : 'rgba(255, 255, 0, 0.25)',
+                stroke: index === activeIndex ? '#ff9800' : '#ffeb3b',
+                strokeWidth: 1,
+                selectable: false,
+                evented: false,
+                excludeFromExport: true,
+                _isSearchHighlight: true,
+            });
+            this._searchHighlights.push(rect);
+            this.canvas.add(rect);
+        });
+        this.canvas.renderAll();
+    }
+
+    clearSearchHighlights() {
+        if (!this._searchHighlights) return;
+        this._searchHighlights.forEach((obj) => this.canvas.remove(obj));
+        this._searchHighlights = [];
+        this.canvas.renderAll();
+    }
+
+    showTableOverlays(tables) {
+        this.clearTableOverlays();
+        this._tableOverlays = [];
+        (tables || []).forEach((table) => {
+            const bbox = table.bbox;
+            if (!bbox || bbox.length < 4) return;
+            const rect = new fabric.Rect({
+                left: bbox[0],
+                top: bbox[1],
+                width: bbox[2] - bbox[0],
+                height: bbox[3] - bbox[1],
+                fill: 'rgba(0, 150, 136, 0.12)',
+                stroke: '#009688',
+                strokeWidth: 2,
+                selectable: false,
+                evented: false,
+                excludeFromExport: true,
+                _isTableOverlay: true,
+            });
+            this._tableOverlays.push(rect);
+            this.canvas.add(rect);
+        });
+        this.canvas.renderAll();
+    }
+
+    clearTableOverlays() {
+        if (!this._tableOverlays) return;
+        this._tableOverlays.forEach((obj) => this.canvas.remove(obj));
+        this._tableOverlays = [];
+        this.canvas.renderAll();
     }
 
     _createRedaction(x, y) {
@@ -932,6 +1142,223 @@ class PDFEditor {
         return { ...this.brushSettings };
     }
 
+    canvasBoundsToPdfBbox(bounds) {
+        const zoom = this.zoomLevel || 1;
+        const scale = this.pdfScale * zoom;
+        let x0 = bounds.left / scale;
+        let y0 = bounds.top / scale;
+        let x1 = (bounds.left + bounds.width) / scale;
+        let y1 = (bounds.top + bounds.height) / scale;
+
+        const minW = 24;
+        const minH = 14;
+        if (Math.abs(x1 - x0) < minW) {
+            const cx = (x0 + x1) / 2;
+            x0 = cx - minW / 2;
+            x1 = cx + minW / 2;
+        }
+        if (Math.abs(y1 - y0) < minH) {
+            const cy = (y0 + y1) / 2;
+            y0 = cy - minH / 2;
+            y1 = cy + minH / 2;
+        }
+
+        return [x0, y0, x1, y1];
+    }
+
+    canvasBoundsToCanvasBbox(bounds) {
+        const zoom = this.zoomLevel || 1;
+        const scale = this.pdfScale * zoom;
+        let x0 = bounds.left;
+        let y0 = bounds.top;
+        let x1 = bounds.left + bounds.width;
+        let y1 = bounds.top + bounds.height;
+
+        const minW = 48 * zoom;
+        const minH = 28 * zoom;
+        if (Math.abs(x1 - x0) < minW) {
+            const cx = (x0 + x1) / 2;
+            x0 = cx - minW / 2;
+            x1 = cx + minW / 2;
+        }
+        if (Math.abs(y1 - y0) < minH) {
+            const cy = (y0 + y1) / 2;
+            y0 = cy - minH / 2;
+            y1 = cy + minH / 2;
+        }
+
+        return [x0, y0, x1, y1];
+    }
+
+    setLinkDrawMode(enabled) {
+        this._linkDrawMode = enabled !== false;
+        this._syncLinkToolInteractivity();
+    }
+
+    getSelectedTextLinkArea() {
+        const active = this.getActiveObjects();
+        if (!active || active.length !== 1) return null;
+        const obj = active[0];
+        const textTypes = ['text', 'i-text', 'textbox'];
+        if (!textTypes.includes(obj._elementType) && !textTypes.includes(obj.type)) {
+            return null;
+        }
+        const bounds = obj.getBoundingRect(true, true);
+        return {
+            pdf_bbox: this.canvasBoundsToPdfBbox(bounds),
+            bbox: this.canvasBoundsToCanvasBbox(bounds),
+        };
+    }
+
+    _truncateLinkLabel(text, maxLen = 28) {
+        const s = String(text || 'Link');
+        return s.length > maxLen ? `${s.slice(0, maxLen - 1)}…` : s;
+    }
+
+    _buildLinkOverlayGroup(link, listIndex) {
+        const bbox = link.bbox;
+        if (!bbox || bbox.length < 4) return null;
+
+        const left = bbox[0];
+        const top = bbox[1];
+        const right = bbox[2];
+        const bottom = bbox[3];
+        const width = Math.max(right - left, 8);
+        const height = Math.max(bottom - top, 8);
+
+        const isGoto = link.link_type === 'goto' || link.kind === 1 || (link.page != null && !link.uri);
+        const fullLabel = isGoto
+            ? `Page ${(link.page ?? 0) + 1}`
+            : (link.uri || 'Link');
+        const label = this._truncateLinkLabel(fullLabel);
+
+        const underlineY = bottom - 1;
+        const underline = new fabric.Line([left, underlineY, right, underlineY], {
+            stroke: '#2563eb',
+            strokeWidth: 2,
+            selectable: false,
+            evented: false,
+        });
+
+        const tint = new fabric.Rect({
+            left,
+            top,
+            width,
+            height,
+            fill: 'rgba(37, 99, 235, 0.06)',
+            stroke: 'transparent',
+            selectable: false,
+            evented: false,
+        });
+
+        const chipPadX = 6;
+        const chipH = 16;
+        const chipW = Math.min(Math.max(label.length * 6.5 + chipPadX * 2, 36), 120);
+        const chipLeft = Math.min(right + 4, left + Math.max(width - chipW, 0));
+        const chipTop = Math.max(top - chipH - 2, top);
+
+        const chipBg = new fabric.Rect({
+            left: chipLeft,
+            top: chipTop,
+            width: chipW,
+            height: chipH,
+            fill: '#2563eb',
+            rx: 4,
+            ry: 4,
+            selectable: false,
+            evented: false,
+        });
+
+        const chipText = new fabric.Text(label, {
+            left: chipLeft + chipPadX,
+            top: chipTop + 3,
+            fontSize: 10,
+            fontFamily: 'Inter, Helvetica, Arial, sans-serif',
+            fill: '#ffffff',
+            textBaseline: 'alphabetic',
+            selectable: false,
+            evented: false,
+        });
+
+        const group = new fabric.Group([tint, underline, chipBg, chipText], {
+            left: 0,
+            top: 0,
+            selectable: false,
+            evented: true,
+            hoverCursor: 'pointer',
+            excludeFromExport: true,
+            _isLinkOverlay: true,
+            _linkIndex: link.index ?? listIndex,
+            _linkListIndex: listIndex,
+            _linkData: link,
+            _linkLabel: fullLabel,
+        });
+
+        group.on('mousedown', (opt) => {
+            if (this.onLinkOverlayClicked) {
+                this.onLinkOverlayClicked(link, listIndex, opt);
+            }
+        });
+
+        group.on('mousedblclick', (opt) => {
+            if (this.onLinkOverlayDoubleClicked) {
+                this.onLinkOverlayDoubleClicked(link, listIndex, opt);
+            }
+        });
+
+        return group;
+    }
+
+    showLinkOverlays(links, options = {}) {
+        this._lastLinkOverlayList = links || [];
+        this._linkOverlayOptions = { visible: true, selectedListIndex: null, selectedLinkIndex: null, ...options };
+        if (this._linkOverlayOptions.visible === false) {
+            this.clearLinkOverlays();
+            return;
+        }
+
+        this.clearLinkOverlays();
+        this._linkOverlays = [];
+
+        (links || []).forEach((link, listIndex) => {
+            const group = this._buildLinkOverlayGroup(link, listIndex);
+            if (!group) return;
+
+            if (this._linkOverlayOptions.selectedListIndex === listIndex ||
+                (link.index != null && this._linkOverlayOptions.selectedLinkIndex === link.index)) {
+                group.set({ opacity: 1 });
+                const objs = group._objects || [];
+                objs.forEach((o) => {
+                    if (o.type === 'line') o.set({ stroke: '#1d4ed8', strokeWidth: 3 });
+                });
+            }
+
+            this._linkOverlays.push(group);
+            this.canvas.add(group);
+        });
+
+        this._linkOverlays.forEach((obj) => {
+            this.canvas.sendToBack(obj);
+        });
+        this.canvas.renderAll();
+    }
+
+    clearLinkOverlays() {
+        if (!this._linkOverlays) return;
+        this._linkOverlays.forEach((obj) => this.canvas.remove(obj));
+        this._linkOverlays = [];
+        this.canvas.renderAll();
+    }
+
+    refreshLinkOverlaySelection(listIndex, linkIndex) {
+        this.showLinkOverlays(this._lastLinkOverlayList || [], {
+            ...this._linkOverlayOptions,
+            visible: this._linkOverlayOptions?.visible !== false,
+            selectedListIndex: listIndex,
+            selectedLinkIndex: linkIndex,
+        });
+    }
+
     getObjects() {
         return this.canvas.getObjects().filter((obj) => {
             if (obj.origin === 'pdf' && !obj._modified) {
@@ -964,10 +1391,18 @@ class PDFEditor {
                 base.fill = typeof obj.fill === 'string' ? obj.fill : '#000000';
                 base.bold = obj.fontWeight === 'bold' || obj.fontWeight >= 700;
                 base.italic = obj.fontStyle === 'italic';
+                base.underline = !!obj.underline;
                 base.opacity = obj.opacity;
                 if (obj.backgroundColor) {
                     base.backgroundColor = obj.backgroundColor;
                 }
+            } else if (obj.type === 'group' && obj._elementType === 'stamp') {
+                base.type = 'stamp';
+                const bounds = obj.getBoundingRect();
+                base.bbox = [bounds.left, bounds.top, bounds.left + bounds.width, bounds.top + bounds.height];
+                base.pdf_bbox = [bounds.left / scale, bounds.top / scale, (bounds.left + bounds.width) / scale, (bounds.top + bounds.height) / scale];
+                base.stampType = obj.stampType || 'approved';
+                base.text = obj.stampText || 'APPROVED';
             } else if (obj.type === 'image') {
                 base.type = 'image';
                 const left = obj.left || 0;
@@ -991,6 +1426,11 @@ class PDFEditor {
                 base.opacity = obj.opacity;
                 if (obj._elementType === 'highlight') base.type = 'highlight';
                 if (obj._elementType === 'redaction') base.type = 'redaction';
+                if (obj.rx) {
+                    base.cornerRadius = obj.rx * (obj.scaleX || 1);
+                }
+                if (obj.lineStyle) base.lineStyle = obj.lineStyle;
+                if (obj.strokeDashArray) base.strokeDashArray = obj.strokeDashArray;
             } else if (obj.type === 'ellipse') {
                 base.type = 'ellipse';
                 const left = obj.left || 0;
@@ -1003,6 +1443,8 @@ class PDFEditor {
                 base.stroke = typeof obj.stroke === 'string' ? obj.stroke : 'transparent';
                 base.strokeWidth = obj.strokeWidth || 0;
                 base.opacity = obj.opacity;
+                if (obj.lineStyle) base.lineStyle = obj.lineStyle;
+                if (obj.strokeDashArray) base.strokeDashArray = obj.strokeDashArray;
             } else if (obj.type === 'polygon' || obj._elementType === 'star') {
                 base.type = 'star';
                 const left = obj.left || 0;
@@ -1031,6 +1473,8 @@ class PDFEditor {
                 base.strokeWidth = obj.strokeWidth || 2;
                 base.opacity = obj.opacity;
                 base.arrow = obj._elementType === 'arrow';
+                if (obj.lineStyle) base.lineStyle = obj.lineStyle;
+                if (obj.strokeDashArray) base.strokeDashArray = obj.strokeDashArray;
             } else if (obj.type === 'path') {
                 base.type = 'path';
                 const bounds = obj.getBoundingRect();
@@ -1042,6 +1486,8 @@ class PDFEditor {
                 if (obj.strokeDashArray) {
                     base.strokeDashArray = obj.strokeDashArray;
                 }
+                if (obj.lineStyle) base.lineStyle = obj.lineStyle;
+                if (obj._inkPoints) base.inkPoints = obj._inkPoints;
                 base.path = obj.path
                     ? obj.path.map((seg) => seg.join(' ')).join(' ')
                     : '';

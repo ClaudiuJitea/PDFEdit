@@ -160,6 +160,7 @@ class Toolbar {
             ['btn-add-form-checkbox', 'checkbox'],
             ['btn-add-form-choice', 'choice'],
             ['btn-add-form-radio', 'radio'],
+            ['btn-add-form-listbox', 'listbox'],
         ];
 
         if (textInput) {
@@ -476,7 +477,7 @@ class Toolbar {
         choiceGroup.style.display = 'none';
         boolGroup.style.display = 'none';
 
-        if (selectedField.widget_kind === 'choice') {
+        if (selectedField.widget_kind === 'choice' || selectedField.widget_kind === 'listbox') {
             choiceGroup.style.display = 'block';
             choiceInput.innerHTML = '';
             (selectedField.choice_values || []).forEach((option) => {
@@ -505,8 +506,122 @@ class Toolbar {
         document.getElementById('props-sticky').style.display = 'none';
         document.getElementById('props-page').style.display = 'none';
         document.getElementById('props-form').style.display = 'none';
+        const extraPanels = ['props-stamp', 'props-link', 'props-document'];
+        extraPanels.forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = 'none';
+        });
         const sigProps = document.getElementById('props-signature');
         if (sigProps) sigProps.style.display = 'none';
+    }
+
+    showStampProperties() {
+        this._hideAllProps();
+        const panel = document.getElementById('props-stamp');
+        if (panel) panel.style.display = 'block';
+    }
+
+    showLinkProperties() {
+        this._hideAllProps();
+        const panel = document.getElementById('props-link');
+        if (panel) panel.style.display = 'block';
+    }
+
+    renderLinkList(links, options = {}) {
+        const listEl = document.getElementById('link-list');
+        const emptyEl = document.getElementById('link-list-empty');
+        if (!listEl) return;
+
+        const {
+            selectedPage = null,
+            selectedLinkIndex = null,
+            scope = 'page',
+            onSelect,
+            onDelete,
+            onJump,
+        } = options;
+
+        listEl.innerHTML = '';
+
+        if (!links || links.length === 0) {
+            if (emptyEl) {
+                emptyEl.classList.remove('hidden');
+                emptyEl.textContent = scope === 'document'
+                    ? 'No hyperlinks in this document.'
+                    : 'No links on this page. Select text and use “Link selected text”, or draw an area.';
+            }
+            return;
+        }
+
+        if (emptyEl) emptyEl.classList.add('hidden');
+
+        links.forEach((link, listIndex) => {
+            const isGoto = link.link_type === 'goto' || (link.page != null && !link.uri);
+            const title = isGoto
+                ? `Page ${(link.page ?? 0) + 1}`
+                : (link.uri || 'Link');
+            const pageNum = link.page_num ?? selectedPage ?? 0;
+            const meta = scope === 'document' ? `Page ${pageNum + 1}` : (isGoto ? 'Internal' : 'External');
+            const isActive = selectedPage === pageNum && selectedLinkIndex === link.index;
+
+            const li = document.createElement('li');
+            li.className = `link-list-item${isActive ? ' active' : ''}`;
+            li.dataset.page = String(pageNum);
+            li.dataset.index = String(link.index);
+            li.dataset.listIndex = String(listIndex);
+
+            li.innerHTML = `
+                <i data-lucide="${isGoto ? 'file-text' : 'external-link'}" class="link-list-icon"></i>
+                <div class="link-list-body">
+                    <div class="link-list-title" title="${this._escapeHtml(title)}">${this._escapeHtml(title)}</div>
+                    <div class="link-list-meta">${this._escapeHtml(meta)}</div>
+                </div>
+                <div class="link-list-actions">
+                    <button type="button" class="link-list-btn" data-action="jump" title="Go to link">↗</button>
+                    <button type="button" class="link-list-btn" data-action="delete" title="Delete link">×</button>
+                </div>
+            `;
+
+            li.addEventListener('click', (e) => {
+                if (e.target.closest('[data-action]')) return;
+                if (onSelect) onSelect(link, listIndex);
+            });
+
+            li.querySelector('[data-action="jump"]')?.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (onJump) onJump(link);
+            });
+
+            li.querySelector('[data-action="delete"]')?.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (onDelete) onDelete(link);
+            });
+
+            listEl.appendChild(li);
+        });
+
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+    }
+
+    _escapeHtml(str) {
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    showDocumentProperties(metadata = {}, bookmarks = []) {
+        this._hideAllProps();
+        const panel = document.getElementById('props-document');
+        if (!panel) return;
+        panel.style.display = 'block';
+        document.getElementById('meta-title').value = metadata.title || '';
+        document.getElementById('meta-author').value = metadata.author || '';
+        document.getElementById('meta-subject').value = metadata.subject || '';
+        document.getElementById('meta-keywords').value = metadata.keywords || '';
+        const lines = (bookmarks || []).map((b) => `${b.level}|${b.title}|${b.page + 1}`);
+        document.getElementById('meta-bookmarks').value = lines.join('\n');
     }
 
     showBrushProperties(settings) {

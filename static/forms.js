@@ -122,11 +122,11 @@ class PDFFormLayer {
     }
 
     _buildControl(field) {
-        if (field.widget_kind === 'choice') {
+        if (field.widget_kind === 'choice' || field.widget_kind === 'listbox') {
             const select = document.createElement('select');
             select.className = 'form-layer-control';
 
-             if ((field.field_type_string || '').toLowerCase().includes('list')) {
+             if (field.widget_kind === 'listbox' || (field.field_type_string || '').toLowerCase().includes('list')) {
                 const visibleOptions = Math.max(2, Math.min((field.choice_values || []).length || 2, Math.floor(((field.bbox?.[3] || 0) - (field.bbox?.[1] || 0)) / 28)));
                 select.size = visibleOptions;
             }

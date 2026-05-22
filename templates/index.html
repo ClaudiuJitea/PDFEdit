@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Great+Vibes&family=Alex+Brush&family=Satisfy&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=1.0.3">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=1.0.8">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
@@ -52,6 +52,14 @@
                     <button id="btn-download" class="top-btn top-btn-accent" title="Download PDF" disabled>
                         <i data-lucide="download" class="btn-icon"></i>
                         <span>Download</span>
+                    </button>
+                    <button id="btn-merge" class="top-btn" title="Merge another PDF" disabled>
+                        <i data-lucide="files" class="btn-icon"></i>
+                        <span>Merge</span>
+                    </button>
+                    <button id="btn-document" class="top-btn" title="Document metadata & bookmarks" disabled>
+                        <i data-lucide="book-open" class="btn-icon"></i>
+                        <span>Document</span>
                     </button>
                     <span class="top-bar-sep"></span>
                     <button id="btn-undo" class="top-btn icon-only" title="Undo (Ctrl+Z)" disabled>
@@ -135,6 +143,12 @@
                     </button>
                     <button class="tool-btn" data-tool="signature" data-shortcut="S" title="Signature (S)">
                         <i data-lucide="pen-tool"></i>
+                    </button>
+                    <button class="tool-btn" data-tool="stamp" data-shortcut="P" title="Stamp (P)">
+                        <i data-lucide="badge-check"></i>
+                    </button>
+                    <button class="tool-btn" data-tool="link" data-shortcut="K" title="Add Link (K)">
+                        <i data-lucide="link"></i>
                     </button>
                     <div class="toolbar-separator"></div>
                     <button class="tool-btn" data-tool="eraser" data-shortcut="Del" title="Delete Selected (Del)">
@@ -228,6 +242,18 @@
 
                     <!-- Page Navigation Bar -->
                     <div class="page-nav">
+                        <div class="find-bar">
+                            <i data-lucide="search" class="find-bar-icon"></i>
+                            <input type="text" id="find-input" class="find-input" placeholder="Find in document..." disabled>
+                            <button id="btn-find-prev" class="nav-btn icon-only" type="button" title="Previous match" disabled>
+                                <i data-lucide="chevron-up" class="btn-icon-sm"></i>
+                            </button>
+                            <button id="btn-find-next" class="nav-btn icon-only" type="button" title="Next match" disabled>
+                                <i data-lucide="chevron-down" class="btn-icon-sm"></i>
+                            </button>
+                            <span id="find-status" class="find-status"></span>
+                        </div>
+                        <div class="nav-divider"></div>
                         <button id="btn-prev-page" class="nav-btn" title="Previous page" disabled>
                             <i data-lucide="chevron-left" class="btn-icon-sm"></i>
                         </button>
@@ -671,7 +697,132 @@
                                 <i data-lucide="file-text" class="btn-icon-sm"></i>
                                 Extract Text
                             </button>
+                            <button id="btn-export-png" class="secondary-btn" title="Export page as PNG">
+                                <i data-lucide="image" class="btn-icon-sm"></i>
+                                Export PNG
+                            </button>
+                            <button id="btn-ocr-page" class="secondary-btn" title="OCR scanned page text">
+                                <i data-lucide="scan-text" class="btn-icon-sm"></i>
+                                OCR Page
+                            </button>
+                            <button id="btn-detect-tables" class="secondary-btn" title="Detect tables on page">
+                                <i data-lucide="table" class="btn-icon-sm"></i>
+                                Find Tables
+                            </button>
+                            <button id="btn-export-tables" class="secondary-btn" title="Export tables as CSV" style="display:none">
+                                <i data-lucide="sheet" class="btn-icon-sm"></i>
+                                Export Tables CSV
+                            </button>
                         </div>
+                    </div>
+                    <div id="tables-overlay-info" class="prop-group" style="display:none">
+                        <label class="prop-label">Tables detected</label>
+                        <p id="tables-count-text" class="form-summary-selected">0 tables</p>
+                    </div>
+                </div>
+
+                <div id="props-stamp" class="props-section" style="display:none">
+                    <h3 class="props-title">Stamp</h3>
+                    <div class="prop-group">
+                        <label class="prop-label">Preset</label>
+                        <select id="prop-stamp-type" class="prop-select">
+                            <option value="approved">Approved</option>
+                            <option value="draft">Draft</option>
+                            <option value="confidential">Confidential</option>
+                            <option value="void">VOID</option>
+                        </select>
+                    </div>
+                    <p class="form-summary-selected">Click on the page to place the stamp.</p>
+                </div>
+
+                <div id="props-link" class="props-section" style="display:none">
+                    <h3 class="props-title">Hyperlinks</h3>
+
+                    <div class="link-action-row">
+                        <button type="button" id="btn-link-selected-text" class="btn-link-action primary" title="Link the selected text">
+                            <i data-lucide="type"></i>
+                            Link selected text
+                        </button>
+                        <button type="button" id="btn-link-draw-area" class="btn-link-action" title="Draw a clickable region">
+                            <i data-lucide="square-dashed"></i>
+                            Draw area
+                        </button>
+                    </div>
+
+                    <div class="prop-group">
+                        <label class="prop-label">Preset</label>
+                        <div class="link-preset-chips" id="link-preset-chips">
+                            <button type="button" class="prop-chip active" data-preset="web">Web</button>
+                            <button type="button" class="prop-chip" data-preset="email">Email</button>
+                            <button type="button" class="prop-chip" data-preset="phone">Phone</button>
+                            <button type="button" class="prop-chip" data-preset="page">Page</button>
+                        </div>
+                    </div>
+
+                    <div class="prop-group">
+                        <label class="prop-label">Link type</label>
+                        <select id="prop-link-kind" class="prop-select">
+                            <option value="uri">Web / email / phone</option>
+                            <option value="goto">Page in document</option>
+                        </select>
+                    </div>
+                    <div class="prop-group" id="prop-link-uri-group">
+                        <label class="prop-label" id="prop-link-uri-label">URL</label>
+                        <input type="text" id="prop-link-uri" class="prop-input" placeholder="https://example.com">
+                    </div>
+                    <div class="prop-group" id="prop-link-page-group" style="display:none">
+                        <label class="prop-label">Target page (1-based)</label>
+                        <input type="number" id="prop-link-page" class="prop-input" min="1" value="1">
+                    </div>
+
+                    <div class="link-toolbar-row">
+                        <button type="button" id="btn-link-test" class="btn-link-mini" title="Open link in browser">Test</button>
+                        <label class="link-toggle-label">
+                            <input type="checkbox" id="prop-link-show-highlights" checked>
+                            Show highlights
+                        </label>
+                    </div>
+
+                    <div class="prop-group">
+                        <div class="link-list-header">
+                            <label class="prop-label">Links</label>
+                            <select id="prop-link-scope" class="prop-select prop-select-compact">
+                                <option value="page">This page</option>
+                                <option value="document">All pages</option>
+                            </select>
+                        </div>
+                        <ul id="link-list" class="link-list" aria-label="Document links"></ul>
+                        <p id="link-list-empty" class="link-list-empty">No links on this page. Select text and use “Link selected text”, or draw an area.</p>
+                    </div>
+                </div>
+
+                <div id="props-document" class="props-section" style="display:none">
+                    <h3 class="props-title">Document</h3>
+                    <div class="prop-group">
+                        <label class="prop-label">Title</label>
+                        <input type="text" id="meta-title" class="prop-input">
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Author</label>
+                        <input type="text" id="meta-author" class="prop-input">
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Subject</label>
+                        <input type="text" id="meta-subject" class="prop-input">
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Keywords</label>
+                        <input type="text" id="meta-keywords" class="prop-input">
+                    </div>
+                    <div class="prop-group">
+                        <button id="btn-save-metadata" class="secondary-btn" type="button">Save Metadata</button>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Bookmarks (one per line: level|title|page)</label>
+                        <textarea id="meta-bookmarks" class="prop-input" rows="6" placeholder="1|Chapter 1|1"></textarea>
+                    </div>
+                    <div class="prop-group">
+                        <button id="btn-save-bookmarks" class="secondary-btn" type="button">Save Bookmarks</button>
                     </div>
                 </div>
 
@@ -699,6 +850,10 @@
                             <button id="btn-add-form-radio" class="secondary-btn form-create-btn" type="button">
                                 <i data-lucide="circle-dot" class="btn-icon-sm"></i>
                                 Radio
+                            </button>
+                            <button id="btn-add-form-listbox" class="secondary-btn form-create-btn" type="button">
+                                <i data-lucide="list-ordered" class="btn-icon-sm"></i>
+                                List Box
                             </button>
                         </div>
                     </div>
@@ -744,6 +899,67 @@
                 </div>
             </aside>
         </div>
+
+        <!-- Export PDF Modal -->
+        <div id="export-modal" class="modal" style="display:none">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content">
+                <h2 class="modal-title">Export PDF</h2>
+                <div class="prop-group">
+                    <label class="form-bool-row">
+                        <input type="checkbox" id="export-flatten">
+                        <span>Flatten form fields (non-editable)</span>
+                    </label>
+                </div>
+                <div class="prop-group">
+                    <label class="form-bool-row">
+                        <input type="checkbox" id="export-split-pages">
+                        <span>Split into separate PDFs (ZIP)</span>
+                    </label>
+                </div>
+                <div class="prop-row">
+                    <div class="prop-group flex-1">
+                        <label class="prop-label">From page</label>
+                        <input type="number" id="export-from-page" class="prop-input" min="1" value="1">
+                    </div>
+                    <div class="prop-group flex-1">
+                        <label class="prop-label">To page</label>
+                        <input type="number" id="export-to-page" class="prop-input" min="1" value="1">
+                    </div>
+                </div>
+                <div class="prop-group">
+                    <label class="prop-label">User password (optional)</label>
+                    <input type="password" id="export-user-password" class="prop-input" autocomplete="new-password">
+                </div>
+                <div class="prop-group">
+                    <label class="prop-label">Owner password (optional)</label>
+                    <input type="password" id="export-owner-password" class="prop-input" autocomplete="new-password">
+                </div>
+                <div class="modal-actions">
+                    <button id="btn-cancel-export" class="modal-btn cancel" type="button">Cancel</button>
+                    <button id="btn-confirm-export" class="modal-btn confirm" type="button">Download</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Password Modal -->
+        <div id="password-modal" class="modal" style="display:none">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content">
+                <h2 class="modal-title">PDF Password Required</h2>
+                <p class="form-summary-selected">This PDF is encrypted. Enter the password to open it.</p>
+                <div class="prop-group">
+                    <label class="prop-label">Password</label>
+                    <input type="password" id="pdf-password-input" class="prop-input" autocomplete="current-password">
+                </div>
+                <div class="modal-actions">
+                    <button id="btn-cancel-password" class="modal-btn cancel" type="button">Cancel</button>
+                    <button id="btn-confirm-password" class="modal-btn confirm" type="button">Open</button>
+                </div>
+            </div>
+        </div>
+
+        <input type="file" id="merge-file-input" accept=".pdf,application/pdf" hidden>
 
         <!-- New PDF Modal -->
         <div id="new-pdf-modal" class="modal" style="display:none">
@@ -887,11 +1103,48 @@
     <script>
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     </script>
-    <script src="{{ url_for('static', filename='api.js') }}?v=1.0.3"></script>
-    <script src="{{ url_for('static', filename='editor.js') }}?v=1.0.3"></script>
-    <script src="{{ url_for('static', filename='forms.js') }}?v=1.0.3"></script>
-    <script src="{{ url_for('static', filename='toolbar.js') }}?v=1.0.3"></script>
-    <script src="{{ url_for('static', filename='signature.js') }}?v=1.0.3"></script>
-    <script src="{{ url_for('static', filename='app.js') }}?v=1.0.3"></script>
+    <script>
+    // Fabric.js 5.x can emit the non-standard baseline "alphabetical".
+    // Chromium rejects it loudly, so normalize at the canvas context boundary.
+    (function () {
+        const validBaseline = 'alphabetic';
+        try {
+            let proto = window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype;
+            let descriptor = null;
+            while (proto && !descriptor) {
+                descriptor = Object.getOwnPropertyDescriptor(proto, 'textBaseline');
+                if (!descriptor) proto = Object.getPrototypeOf(proto);
+            }
+            if (descriptor && descriptor.get && descriptor.set && descriptor.configurable !== false) {
+                Object.defineProperty(proto, 'textBaseline', {
+                    configurable: true,
+                    enumerable: descriptor.enumerable,
+                    get: function () {
+                        return descriptor.get.call(this);
+                    },
+                    set: function (value) {
+                        descriptor.set.call(this, value === 'alphabetical' ? validBaseline : value);
+                    },
+                });
+            }
+        } catch (err) {
+            console.warn('Unable to patch canvas textBaseline:', err);
+        }
+
+        if (typeof fabric === 'undefined') return;
+        ['Object', 'Text', 'IText', 'Textbox'].forEach(function (name) {
+            const cls = fabric[name];
+            if (cls && cls.prototype && cls.prototype.textBaseline === 'alphabetical') {
+                cls.prototype.textBaseline = validBaseline;
+            }
+        });
+    })();
+    </script>
+    <script src="{{ url_for('static', filename='api.js') }}?v=1.0.8"></script>
+    <script src="{{ url_for('static', filename='editor.js') }}?v=1.0.8"></script>
+    <script src="{{ url_for('static', filename='forms.js') }}?v=1.0.4"></script>
+    <script src="{{ url_for('static', filename='toolbar.js') }}?v=1.0.8"></script>
+    <script src="{{ url_for('static', filename='signature.js') }}?v=1.0.4"></script>
+    <script src="{{ url_for('static', filename='app.js') }}?v=1.0.8"></script>
 </body>
 </html>
