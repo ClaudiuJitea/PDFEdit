@@ -31,9 +31,16 @@ class App {
         this.linkScope = 'page';
         this.linkPreset = 'web';
         this._linkDrawAreaMode = false;
+        this.isDirty = false;
+        this._draftPersistTimer = null;
+        this._SESSION_STORAGE_KEY = 'pdfedit-session';
     }
 
-    init() {
+    _draftStorageKey(sessionId) {
+        return `pdfedit-draft-${sessionId}`;
+    }
+
+    async init() {
         this.toolbar.init();
         this._bindElements();
         this.formLayer.init(this.els.canvasWrapper, this.els.formLayer);
@@ -53,6 +60,7 @@ class App {
         this.formLayer._onFieldDelete = (xref) => this._deleteFormField(xref);
         this._attachEditorCallbacks();
         lucide.createIcons();
+        await this._restoreSessionOnInit();
     }
 
     _attachEditorCallbacks() {
@@ -84,7 +92,10 @@ class App {
                 this._showContextProperties();
             }
         };
-        this.editor.onCanvasModified = () => this._pushUndo();
+        this.editor.onCanvasModified = () => {
+            this._pushUndo();
+            this._markDirty();
+        };
         this.editor.onLinkAreaDrawn = (area) => this._onLinkAreaDrawn(area);
         this.editor.onLinkOverlayClicked = (link) => this._selectLinkEntry(link);
         this.editor.onLinkOverlayDoubleClicked = (link) => this._testLinkEntry(link);
@@ -167,6 +178,12 @@ class App {
             exportToPage: document.getElementById('export-to-page'),
             exportUserPassword: document.getElementById('export-user-password'),
             exportOwnerPassword: document.getElementById('export-owner-password'),
+            unsavedModal: document.getElementById('unsaved-modal'),
+            unsavedModalTitle: document.getElementById('unsaved-modal-title'),
+            unsavedModalMessage: document.getElementById('unsaved-modal-message'),
+            btnUnsavedCancel: document.getElementById('btn-unsaved-cancel'),
+            btnUnsavedDiscard: document.getElementById('btn-unsaved-discard'),
+            btnUnsavedSave: document.getElementById('btn-unsaved-save'),
             passwordModal: document.getElementById('password-modal'),
             pdfPasswordInput: document.getElementById('pdf-password-input'),
             btnCancelPassword: document.getElementById('btn-cancel-password'),
@@ -195,11 +212,21 @@ class App {
             btnSaveMetadata: document.getElementById('btn-save-metadata'),
             btnSaveBookmarks: document.getElementById('btn-save-bookmarks'),
         };
+
+        try {
+            if (localStorage.getItem(this._SESSION_STORAGE_KEY)) {
+                this.els.uploadZone.style.display = 'none';
+                this.els.editorContainer.style.display = 'flex';
+                this.els.canvasLoading.style.display = 'flex';
+            }
+        } catch (_) {
+            // ignore storage access errors during startup
+        }
     }
 
     _bindEvents() {
-        this.els.btnUpload.addEventListener('click', () => this.els.fileInput.click());
-        this.els.btnUploadZone.addEventListener('click', () => this.els.fileInput.click());
+        this.els.btnUpload.addEventListener('click', () => this._openFilePicker());
+        this.els.btnUploadZone.addEventListener('click', () => this._openFilePicker());
         this.els.fileInput.addEventListener('change', (e) => this._onFileSelected(e));
         this.els.btnNew.addEventListener('click', () => this._showNewPdfModal());
         this.els.btnNewZone.addEventListener('click', () => this._showNewPdfModal());
@@ -216,6 +243,12 @@ class App {
             this.els.btnCancelExport.addEventListener('click', () => this._hideExportModal());
             this.els.exportModal.querySelector('.modal-backdrop')?.addEventListener('click', () => this._hideExportModal());
             this.els.btnConfirmExport.addEventListener('click', () => this._confirmExport());
+        }
+        if (this.els.unsavedModal) {
+            this.els.btnUnsavedCancel.addEventListener('click', () => this._resolveUnsavedModal('cancel'));
+            this.els.btnUnsavedDiscard.addEventListener('click', () => this._resolveUnsavedModal('discard'));
+            this.els.btnUnsavedSave.addEventListener('click', () => this._resolveUnsavedModal('save'));
+            this.els.unsavedModal.querySelector('.modal-backdrop')?.addEventListener('click', () => this._resolveUnsavedModal('cancel'));
         }
         if (this.els.btnCancelPassword) {
             this.els.btnCancelPassword.addEventListener('click', () => this._hidePasswordModal());
@@ -348,6 +381,15 @@ class App {
         const modalBackdrop = this.els.newPdfModal.querySelector('.modal-backdrop');
         modalBackdrop.addEventListener('click', () => this._hideNewPdfModal());
         this._initShapeDropdown();
+
+        window.addEventListener('beforeunload', (e) => {
+            this._persistDraft();
+            if (this._hasUnsavedChanges()) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        });
+        window.addEventListener('pagehide', () => this._persistDraft());
     }
 
     _initShapeDropdown() {
@@ -391,6 +433,12 @@ class App {
 
     _bindKeyboard() {
         document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && this.els.unsavedModal?.style.display === 'flex') {
+                e.preventDefault();
+                this._resolveUnsavedModal('cancel');
+                return;
+            }
+
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
                 if (e.key === 'Escape') e.target.blur();
                 return;
@@ -414,7 +462,7 @@ class App {
                         return;
                     case 'o':
                         e.preventDefault();
-                        this.els.fileInput.click();
+                        this._openFilePicker();
                         return;
                 }
             }
@@ -612,13 +660,271 @@ class App {
         });
     }
 
+    async _openFilePicker() {
+        if (this.sessionId) {
+            if (!(await this._proceedPastUnsaved({
+                message: 'You have unsaved changes. Save them before opening another file?',
+            }))) {
+                return;
+            }
+        }
+        this.els.fileInput.click();
+    }
+
     _onFileSelected(e) {
         const file = e.target.files[0];
-        if (file) this._uploadFile(file);
+        if (file) this._uploadFile(file, null, { skipUnsavedCheck: true });
         e.target.value = '';
     }
 
-    async _uploadFile(file, password = null) {
+    _markDirty() {
+        this.isDirty = true;
+        this._scheduleDraftPersist();
+        this._updateSaveUnsavedIndicator();
+    }
+
+    _updateSaveUnsavedIndicator() {
+        const btn = this.els.btnSave;
+        if (!btn) return;
+
+        const dirty = this._hasUnsavedChanges();
+        const count = this._getDirtyPageNumbers().length;
+
+        btn.classList.toggle('has-unsaved', dirty && !this.isSaving);
+
+        if (dirty && count > 1) {
+            btn.dataset.unsavedCount = String(count);
+        } else {
+            delete btn.dataset.unsavedCount;
+        }
+
+        if (dirty && this.sessionId) {
+            const pagesLabel = count > 1 ? `${count} pages` : 'this page';
+            btn.title = `Save unsaved changes on ${pagesLabel} (Ctrl+S)`;
+            btn.setAttribute(
+                'aria-label',
+                `Save, unsaved changes on ${count} page${count === 1 ? '' : 's'}`
+            );
+        } else {
+            btn.title = 'Save (Ctrl+S)';
+            btn.setAttribute('aria-label', 'Save');
+        }
+    }
+
+    _hasUnsavedChanges() {
+        if (!this.sessionId) return false;
+        if (this.isDirty) return true;
+        return Object.keys(this.pageStates).some((key) => {
+            const state = this.pageStates[key];
+            return state?.objects?.length > 0;
+        });
+    }
+
+    _getDirtyPageNumbers() {
+        const pages = new Set();
+        if (this.isDirty) {
+            pages.add(this.currentPage);
+        }
+        for (const key of Object.keys(this.pageStates)) {
+            const state = this.pageStates[key];
+            if (state?.objects?.length > 0) {
+                pages.add(parseInt(key, 10));
+            }
+        }
+        return [...pages].sort((a, b) => a - b);
+    }
+
+    _promptUnsavedChanges(options = {}) {
+        const {
+            title = 'Unsaved changes',
+            message = 'You have unsaved changes. Save them before continuing?',
+            showSave = true,
+        } = options;
+
+        if (!this._hasUnsavedChanges()) {
+            return Promise.resolve('discard');
+        }
+
+        return new Promise((resolve) => {
+            this._unsavedModalResolver = resolve;
+            this.els.unsavedModalTitle.textContent = title;
+            this.els.unsavedModalMessage.textContent = message;
+            this.els.btnUnsavedSave.style.display = showSave ? '' : 'none';
+            this.els.unsavedModal.style.display = 'flex';
+        });
+    }
+
+    _resolveUnsavedModal(choice) {
+        if (this._unsavedModalResolver) {
+            const resolve = this._unsavedModalResolver;
+            this._unsavedModalResolver = null;
+            resolve(choice);
+        }
+        this._hideUnsavedModal();
+    }
+
+    _hideUnsavedModal() {
+        if (this.els.unsavedModal) {
+            this.els.unsavedModal.style.display = 'none';
+        }
+    }
+
+    async _proceedPastUnsaved(options = {}) {
+        if (!this._hasUnsavedChanges()) return true;
+
+        const choice = await this._promptUnsavedChanges(options);
+        if (choice === 'cancel') return false;
+        if (choice === 'save') {
+            return this._saveAllDirtyPages();
+        }
+        return true;
+    }
+
+    async _saveAllDirtyPages() {
+        const pages = this._getDirtyPageNumbers();
+        if (pages.length === 0) {
+            this.isDirty = false;
+            this._updateSaveUnsavedIndicator();
+            return true;
+        }
+
+        this._persistDraft();
+        const originalPage = this.currentPage;
+
+        for (const pageNum of pages) {
+            if (pageNum !== this.currentPage) {
+                await this._goToPage(pageNum);
+                await this._awaitPendingPageLoad();
+            }
+            const ok = await this._saveCurrentPage({ silent: true });
+            if (!ok) {
+                if (this.currentPage !== originalPage) {
+                    await this._goToPage(originalPage);
+                }
+                this._updateSaveUnsavedIndicator();
+                return false;
+            }
+        }
+
+        if (this.currentPage !== originalPage) {
+            await this._goToPage(originalPage);
+        }
+        this._showToast(
+            `Saved ${pages.length} page${pages.length === 1 ? '' : 's'}`,
+            'success'
+        );
+        this._updateSaveUnsavedIndicator();
+        return true;
+    }
+
+    _persistSessionMeta() {
+        if (!this.sessionId) return;
+        try {
+            localStorage.setItem(this._SESSION_STORAGE_KEY, JSON.stringify({
+                sessionId: this.sessionId,
+                currentPage: this.currentPage,
+                pageCount: this.pageCount,
+                updatedAt: Date.now(),
+            }));
+        } catch (err) {
+            console.warn('Failed to persist session metadata:', err);
+        }
+    }
+
+    _persistDraft() {
+        if (!this.sessionId) return;
+        if (this.editor.canvas) {
+            this.pageStates[this.currentPage] = this.editor.toJSON();
+            this._syncCurrentPageFormsState();
+        }
+        try {
+            localStorage.setItem(this._draftStorageKey(this.sessionId), JSON.stringify({
+                pageStates: this.pageStates,
+                pageFormStates: this.pageFormStates,
+                currentPage: this.currentPage,
+                updatedAt: Date.now(),
+            }));
+            this._persistSessionMeta();
+        } catch (err) {
+            console.warn('Failed to persist draft:', err);
+        }
+    }
+
+    _scheduleDraftPersist() {
+        clearTimeout(this._draftPersistTimer);
+        this._draftPersistTimer = setTimeout(() => this._persistDraft(), 500);
+    }
+
+    _loadDraft(sessionId) {
+        try {
+            const raw = localStorage.getItem(this._draftStorageKey(sessionId));
+            if (!raw) return null;
+            return JSON.parse(raw);
+        } catch {
+            return null;
+        }
+    }
+
+    _clearSessionStorage(sessionId) {
+        localStorage.removeItem(this._SESSION_STORAGE_KEY);
+        if (sessionId) {
+            localStorage.removeItem(this._draftStorageKey(sessionId));
+        }
+    }
+
+    async _restoreSessionOnInit() {
+        let stored;
+        try {
+            const raw = localStorage.getItem(this._SESSION_STORAGE_KEY);
+            if (!raw) return;
+            stored = JSON.parse(raw);
+        } catch {
+            this._clearSessionStorage();
+            return;
+        }
+
+        if (!stored?.sessionId) return;
+
+        try {
+            const data = await API.getSession(stored.sessionId);
+            const draft = this._loadDraft(stored.sessionId);
+
+            this._initSession(data, {
+                deleteOldSession: false,
+                clearDraft: false,
+                skipInitialLoad: true,
+            });
+
+            if (draft) {
+                this.pageStates = draft.pageStates || {};
+                this.pageFormStates = draft.pageFormStates || {};
+            }
+
+            const page = Math.min(
+                Math.max(0, stored.currentPage ?? draft?.currentPage ?? 0),
+                this.pageCount - 1
+            );
+            this.currentPage = page;
+            this._updatePageInfo();
+            await this._loadPage(page);
+            this._showToast('Restored your previous document', 'success');
+        } catch (err) {
+            console.warn('Session restore failed:', err);
+            this._clearSessionStorage(stored.sessionId);
+            this.els.uploadZone.style.display = '';
+            this.els.editorContainer.style.display = 'none';
+            this.els.canvasLoading.style.display = 'none';
+        }
+    }
+
+    async _uploadFile(file, password = null, options = {}) {
+        const { skipUnsavedCheck = false } = options;
+        if (!skipUnsavedCheck && !(await this._proceedPastUnsaved({
+            message: 'You have unsaved changes. Save them before opening another file?',
+        }))) {
+            return;
+        }
+
         if (file.type !== 'application/pdf') {
             this._showToast('Please select a PDF file', 'error');
             return;
@@ -677,6 +983,12 @@ class App {
     }
 
     async _createNewPdf() {
+        if (!(await this._proceedPastUnsaved({
+            message: 'You have unsaved changes. Save them before creating a new document?',
+        }))) {
+            return;
+        }
+
         const size = this.els.newPageSize.value;
         let width, height;
         if (size === 'custom') {
@@ -695,22 +1007,35 @@ class App {
         }
     }
 
-    _initSession(data) {
-        if (this.sessionId) {
-            API.deleteSession(this.sessionId).catch(() => {});
+    _initSession(data, options = {}) {
+        const {
+            deleteOldSession = true,
+            clearDraft = true,
+            skipInitialLoad = false,
+            initialPage = 0,
+        } = options;
+        const oldSessionId = this.sessionId;
+
+        if (deleteOldSession && oldSessionId && oldSessionId !== data.session_id) {
+            this._clearSessionStorage(oldSessionId);
+            API.deleteSession(oldSessionId).catch(() => {});
         }
 
         this.sessionId = data.session_id;
         this.pageCount = data.page_count;
         this.pageSizes = data.page_sizes || [];
-        this.currentPage = 0;
+        this.currentPage = initialPage;
         this.undoStack = [];
         this.redoStack = [];
-        this.pageStates = {};
-        this.pageFormStates = {};
+        if (clearDraft) {
+            this.pageStates = {};
+            this.pageFormStates = {};
+        }
         this.thumbnails = {};
         this.selectedFormXref = null;
+        this.isDirty = false;
         this.formLayer.clear();
+        this._updateSaveUnsavedIndicator();
 
         this.els.uploadZone.style.display = 'none';
         this.els.editorContainer.style.display = 'flex';
@@ -729,8 +1054,11 @@ class App {
         this._updateUndoRedoButtons();
         this.toolbar.setActiveTool('select');
         this._toggleThumbnails(true);
+        this._persistSessionMeta();
 
-        this._loadPage(0);
+        if (!skipInitialLoad) {
+            this._loadPage(initialPage);
+        }
     }
 
     async _loadPage(pageNum, options = {}) {
@@ -819,6 +1147,8 @@ class App {
             console.error('Failed to load page:', err);
         } finally {
             this.isLoading = false;
+            this.isDirty = false;
+            this._updateSaveUnsavedIndicator();
         }
     }
 
@@ -859,9 +1189,12 @@ class App {
         const previousPage = this.currentPage;
         this.pageStates[previousPage] = this.editor.toJSON();
         this._syncCurrentPageFormsState();
+        this._persistDraft();
+        this._updateSaveUnsavedIndicator();
 
         this.currentPage = pageNum;
         this._updatePageInfo();
+        this._persistSessionMeta();
 
         const loadPromise = this._loadPage(pageNum, { preserveCurrentPage: true, fallbackPage: previousPage });
         this.pendingPageLoad = loadPromise;
@@ -971,9 +1304,10 @@ class App {
     }
 
     async _saveCurrentPage(options = {}) {
-        if (this.isSaving || !this.sessionId) return;
+        if (this.isSaving || !this.sessionId) return false;
         const { silent = false } = options;
         this.isSaving = true;
+        this._updateSaveUnsavedIndicator();
         this.els.btnSave.disabled = true;
         const originalHTML = this.els.btnSave.innerHTML;
         this.els.btnSave.innerHTML = '<span class="spinner"></span><span>Saving</span>';
@@ -992,16 +1326,21 @@ class App {
 
             this.editor.clearDeletedOriginals();
             delete this.pageStates[this.currentPage];
+            this.isDirty = false;
+            this._persistDraft();
             if (!silent) {
                 this._showToast('Page saved', 'success');
             }
+            return true;
         } catch (err) {
             this._showToast(err.message, 'error');
+            return false;
         } finally {
             this.isSaving = false;
             this.els.btnSave.disabled = false;
             this.els.btnSave.innerHTML = originalHTML;
             lucide.createIcons();
+            this._updateSaveUnsavedIndicator();
         }
     }
 
@@ -1269,6 +1608,7 @@ class App {
         this.selectedFormXref = field?.xref ?? this.selectedFormXref;
         this._syncCurrentPageFormsState();
         this._showFormProperties();
+        this._markDirty();
     }
 
     _onFormValueChange(value) {

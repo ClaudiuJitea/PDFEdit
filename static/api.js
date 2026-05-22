@@ -349,6 +349,15 @@ const API = {
         return resp.json();
     },
 
+    async getSession(sessionId) {
+        const resp = await fetch(`${this.baseUrl}/session/${sessionId}`);
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'Session not found' }));
+            throw new Error(err.error || 'Session not found');
+        }
+        return resp.json();
+    },
+
     async deleteSession(sessionId) {
         const resp = await fetch(`${this.baseUrl}/session/${sessionId}`, {
             method: 'DELETE',

@@ -45,9 +45,9 @@
                         <span>New</span>
                     </button>
                     <span class="top-bar-sep"></span>
-                    <button id="btn-save" class="top-btn top-btn-accent" title="Save (Ctrl+S)" disabled>
+                    <button id="btn-save" class="top-btn top-btn-accent save-btn" title="Save (Ctrl+S)" disabled aria-label="Save">
                         <i data-lucide="save" class="btn-icon"></i>
-                        <span>Save</span>
+                        <span class="save-btn-label">Save</span>
                     </button>
                     <button id="btn-download" class="top-btn top-btn-accent" title="Download PDF" disabled>
                         <i data-lucide="download" class="btn-icon"></i>
@@ -938,6 +938,20 @@
                 <div class="modal-actions">
                     <button id="btn-cancel-export" class="modal-btn cancel" type="button">Cancel</button>
                     <button id="btn-confirm-export" class="modal-btn confirm" type="button">Download</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Unsaved Changes Modal -->
+        <div id="unsaved-modal" class="modal modal-unsaved" style="display:none">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content">
+                <h2 id="unsaved-modal-title" class="modal-title">Unsaved changes</h2>
+                <p id="unsaved-modal-message" class="form-summary-selected"></p>
+                <div class="modal-actions">
+                    <button id="btn-unsaved-cancel" class="modal-btn cancel" type="button">Cancel</button>
+                    <button id="btn-unsaved-discard" class="modal-btn discard" type="button">Discard changes</button>
+                    <button id="btn-unsaved-save" class="modal-btn confirm" type="button">Save and continue</button>
                 </div>
             </div>
         </div>

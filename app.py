@@ -2927,6 +2927,23 @@ def rotate_page(session_id, page_num):
     })
 
 
+@app.route("/api/session/<session_id>", methods=["GET"])
+def get_session_info(session_id):
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    doc = entry["doc"]
+    page_sizes = [page_size_payload(doc[i]) for i in range(len(doc))]
+    return jsonify({
+        "session_id": session_id,
+        "page_count": len(doc),
+        "page_sizes": page_sizes,
+        "metadata": dict(doc.metadata or {}),
+        "bookmarks": toc_to_json(doc),
+    })
+
+
 @app.route("/api/session/<session_id>", methods=["DELETE"])
 def cleanup_session(session_id):
     entry = sessions.pop(session_id, None)
