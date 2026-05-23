@@ -1741,6 +1741,65 @@ select {
     flex: 1;
 }
 
+.props-subsection-label {
+    margin: 14px 0 6px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-text-muted);
+}
+
+.prop-btn-group-wide {
+    width: 100%;
+}
+
+.prop-btn-group-wide .prop-toggle {
+    flex: 1;
+}
+
+.prop-btn-group-wide .prop-case-btn {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+.align-icon {
+    display: block;
+    width: 14px;
+    height: 10px;
+    position: relative;
+}
+
+.align-icon::before,
+.align-icon::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 2px;
+    border-radius: 999px;
+    background: currentColor;
+}
+
+.align-left::before { top: 0; width: 100%; }
+.align-left::after { top: 6px; width: 70%; }
+
+.align-center::before { top: 0; left: 15%; right: 15%; }
+.align-center::after { top: 6px; left: 0; right: 0; }
+
+.align-right::before { top: 0; right: 0; left: auto; width: 100%; }
+.align-right::after { top: 6px; right: 0; left: auto; width: 70%; }
+
+.align-justify::before { top: 0; }
+.align-justify::after { top: 6px; }
+
+.align-justify::before,
+.align-justify::after {
+    left: 0;
+    right: 0;
+}
+
 .prop-btn-group {
     display: flex;
     gap: 2px;
@@ -2046,6 +2105,52 @@ select {
 
 .context-menu-item-danger:hover {
     background: color-mix(in srgb, var(--color-error) 9%, var(--color-surface));
+}
+
+.context-menu-section {
+    padding: 4px 0 6px;
+}
+
+.context-menu-label {
+    display: block;
+    padding: 4px 12px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--color-text-muted);
+}
+
+.context-menu-divider {
+    height: 1px;
+    margin: 6px 8px;
+    background: color-mix(in srgb, var(--color-border) 80%, transparent);
+}
+
+.context-align-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    padding: 0 4px;
+}
+
+.context-align-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 8px 4px;
+    border-radius: 10px;
+    color: var(--color-text);
+    font-size: 11px;
+    font-weight: 600;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.context-align-btn:hover {
+    background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface-offset));
+    color: var(--color-primary);
 }
 
 .toast.success {

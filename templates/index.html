@@ -367,19 +367,50 @@
                             <label class="prop-label">Size</label>
                             <input type="number" id="prop-font-size" class="prop-input" min="6" max="200" value="16">
                         </div>
-                        <div class="prop-group">
-                            <label class="prop-label">Style</label>
-                            <div class="prop-btn-group">
-                                <button id="prop-bold" class="prop-toggle" title="Bold">
-                                    <strong>B</strong>
-                                </button>
-                                <button id="prop-italic" class="prop-toggle" title="Italic">
-                                    <em>I</em>
-                                </button>
-                                <button id="prop-underline" class="prop-toggle" title="Underline">
-                                    <u>U</u>
-                                </button>
-                            </div>
+                        <div class="prop-group flex-1">
+                            <label class="prop-label">Weight</label>
+                            <select id="prop-font-weight" class="prop-select">
+                                <option value="300">Light</option>
+                                <option value="400" selected>Regular</option>
+                                <option value="500">Medium</option>
+                                <option value="600">Semi Bold</option>
+                                <option value="700">Bold</option>
+                                <option value="900">Black</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Style</label>
+                        <div class="prop-btn-group prop-btn-group-wide">
+                            <button id="prop-bold" class="prop-toggle" type="button" title="Bold">
+                                <strong>B</strong>
+                            </button>
+                            <button id="prop-italic" class="prop-toggle" type="button" title="Italic">
+                                <em>I</em>
+                            </button>
+                            <button id="prop-underline" class="prop-toggle" type="button" title="Underline">
+                                <u>U</u>
+                            </button>
+                            <button id="prop-strikethrough" class="prop-toggle" type="button" title="Strikethrough">
+                                <s>S</s>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Align to page</label>
+                        <div class="prop-btn-group prop-btn-group-wide" id="prop-text-align-group">
+                            <button class="prop-toggle prop-align-btn active" type="button" data-align="left" title="Align block to left page margin">
+                                <span class="align-icon align-left"></span>
+                            </button>
+                            <button class="prop-toggle prop-align-btn" type="button" data-align="center" title="Align block to page center">
+                                <span class="align-icon align-center"></span>
+                            </button>
+                            <button class="prop-toggle prop-align-btn" type="button" data-align="right" title="Align block to right page margin">
+                                <span class="align-icon align-right"></span>
+                            </button>
+                            <button class="prop-toggle prop-align-btn" type="button" data-align="justify" title="Stretch text across page width">
+                                <span class="align-icon align-justify"></span>
+                            </button>
                         </div>
                     </div>
                     <div class="prop-row">
@@ -393,6 +424,74 @@
                                 <input type="color" id="prop-text-bg" class="prop-color" value="#ffffff">
                                 <button id="prop-clear-text-bg" class="color-clear-btn" title="Clear background">✕</button>
                             </div>
+                        </div>
+                    </div>
+                    <p class="props-subsection-label">Spacing</p>
+                    <div class="prop-row">
+                        <div class="prop-group flex-1">
+                            <label class="prop-label">Line Height</label>
+                            <div class="prop-control-stack">
+                                <div class="prop-value-box compact">
+                                    <button class="prop-step-btn" type="button" data-step-target="prop-line-height" data-step="-0.1" title="Decrease line height">−</button>
+                                    <input type="number" id="prop-line-height" class="prop-input prop-input-compact" min="0.5" max="4" step="0.1" value="1.2">
+                                    <button class="prop-step-btn" type="button" data-step-target="prop-line-height" data-step="0.1" title="Increase line height">+</button>
+                                </div>
+                                <div class="prop-chip-group" data-chip-target="prop-line-height">
+                                    <button class="prop-chip" type="button" data-value="1"><span>1×</span></button>
+                                    <button class="prop-chip" type="button" data-value="1.2"><span>1.2×</span></button>
+                                    <button class="prop-chip" type="button" data-value="1.5"><span>1.5×</span></button>
+                                    <button class="prop-chip" type="button" data-value="2"><span>2×</span></button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Letter Spacing</label>
+                        <div class="prop-control-stack">
+                            <div class="prop-value-box compact">
+                                <button class="prop-step-btn" type="button" data-step-target="prop-char-spacing" data-step="-10" title="Decrease letter spacing">−10</button>
+                                <input type="number" id="prop-char-spacing" class="prop-input prop-input-compact" min="-50" max="400" step="5" value="0">
+                                <span class="prop-unit">px</span>
+                                <button class="prop-step-btn" type="button" data-step-target="prop-char-spacing" data-step="10" title="Increase letter spacing">+10</button>
+                            </div>
+                            <div class="prop-chip-group" data-chip-target="prop-char-spacing">
+                                <button class="prop-chip" type="button" data-value="0"><span>0</span></button>
+                                <button class="prop-chip" type="button" data-value="50"><span>50</span></button>
+                                <button class="prop-chip" type="button" data-value="100"><span>100</span></button>
+                                <button class="prop-chip" type="button" data-value="200"><span>200</span></button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Case</label>
+                        <div class="prop-btn-group prop-btn-group-wide" id="prop-text-case-group">
+                            <button class="prop-toggle prop-case-btn active" type="button" data-case="none" title="Normal case">Aa</button>
+                            <button class="prop-toggle prop-case-btn" type="button" data-case="upper" title="UPPERCASE">AA</button>
+                            <button class="prop-toggle prop-case-btn" type="button" data-case="lower" title="lowercase">aa</button>
+                            <button class="prop-toggle prop-case-btn" type="button" data-case="title" title="Title Case">Ab</button>
+                        </div>
+                    </div>
+                    <p class="props-subsection-label">Effects</p>
+                    <div class="prop-row">
+                        <div class="prop-group flex-1">
+                            <label class="prop-label">Outline</label>
+                            <input type="color" id="prop-text-stroke-color" class="prop-color" value="#000000">
+                        </div>
+                        <div class="prop-group flex-1">
+                            <label class="prop-label">Outline Width</label>
+                            <div class="prop-value-box compact">
+                                <button class="prop-step-btn" type="button" data-step-target="prop-text-stroke-width" data-step="-0.5" title="Thinner outline">−</button>
+                                <input type="number" id="prop-text-stroke-width" class="prop-input prop-input-compact" min="0" max="8" step="0.5" value="0">
+                                <span class="prop-unit">px</span>
+                                <button class="prop-step-btn" type="button" data-step-target="prop-text-stroke-width" data-step="0.5" title="Thicker outline">+</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Shadow</label>
+                        <div class="prop-btn-group">
+                            <button id="prop-text-shadow" class="prop-toggle" type="button" title="Toggle drop shadow">Shadow</button>
+                            <button id="prop-clear-text-stroke" class="prop-toggle" type="button" title="Remove outline">No outline</button>
                         </div>
                     </div>
                     <div class="prop-group">
@@ -1098,6 +1197,36 @@
                 <i data-lucide="pin-off" class="btn-icon-sm"></i>
                 <span>Unpin</span>
             </button>
+            <div id="context-align-section" class="context-menu-section" style="display:none">
+                <span class="context-menu-label">Align to page margins</span>
+                <div class="context-align-grid">
+                    <button type="button" class="context-align-btn" data-page-align="left" title="Align left edges to left margin">
+                        <i data-lucide="align-left" class="btn-icon-sm"></i>
+                        <span>Left</span>
+                    </button>
+                    <button type="button" class="context-align-btn" data-page-align="center" title="Align horizontally to page center">
+                        <i data-lucide="align-center" class="btn-icon-sm"></i>
+                        <span>Center</span>
+                    </button>
+                    <button type="button" class="context-align-btn" data-page-align="right" title="Align right edges to right margin">
+                        <i data-lucide="align-right" class="btn-icon-sm"></i>
+                        <span>Right</span>
+                    </button>
+                    <button type="button" class="context-align-btn" data-page-align="top" title="Align top edges to top margin">
+                        <i data-lucide="align-start-vertical" class="btn-icon-sm"></i>
+                        <span>Top</span>
+                    </button>
+                    <button type="button" class="context-align-btn" data-page-align="middle" title="Align vertically to page center">
+                        <i data-lucide="align-center-vertical" class="btn-icon-sm"></i>
+                        <span>Middle</span>
+                    </button>
+                    <button type="button" class="context-align-btn" data-page-align="bottom" title="Align bottom edges to bottom margin">
+                        <i data-lucide="align-end-vertical" class="btn-icon-sm"></i>
+                        <span>Bottom</span>
+                    </button>
+                </div>
+            </div>
+            <div id="context-menu-divider" class="context-menu-divider" style="display:none"></div>
             <button id="btn-context-delete" type="button" class="context-menu-item context-menu-item-danger" title="Delete selected objects">
                 <i data-lucide="trash-2" class="btn-icon-sm"></i>
                 <span>Delete</span>

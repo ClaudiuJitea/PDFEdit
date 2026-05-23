@@ -30,7 +30,8 @@ class Toolbar {
 
     _bindPropertyControls() {
         const textProps = [
-            'prop-font-family', 'prop-font-size', 'prop-text-color', 'prop-text-bg',
+            'prop-font-family', 'prop-font-size', 'prop-font-weight', 'prop-text-color', 'prop-text-bg',
+            'prop-line-height', 'prop-char-spacing', 'prop-text-stroke-color', 'prop-text-stroke-width',
             'prop-text-opacity', 'prop-text-rotation',
         ];
         textProps.forEach((id) => {
@@ -43,11 +44,48 @@ class Toolbar {
         document.getElementById('prop-bold').addEventListener('click', () => this._toggleStyle('bold'));
         document.getElementById('prop-italic').addEventListener('click', () => this._toggleStyle('italic'));
         document.getElementById('prop-underline').addEventListener('click', () => this._toggleStyle('underline'));
+        document.getElementById('prop-strikethrough').addEventListener('click', () => this._toggleStyle('strikethrough'));
+
+        document.querySelectorAll('.prop-align-btn').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.prop-align-btn').forEach((b) => b.classList.remove('active'));
+                btn.classList.add('active');
+                if (this.onPropertyChange) {
+                    this.onPropertyChange('text', 'pageAlign', btn.dataset.align);
+                }
+            });
+        });
+
+        document.querySelectorAll('.prop-case-btn').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.prop-case-btn').forEach((b) => b.classList.remove('active'));
+                btn.classList.add('active');
+                if (this.onPropertyChange) {
+                    this.onPropertyChange('text', 'textCase', btn.dataset.case);
+                }
+            });
+        });
+
+        document.getElementById('prop-text-shadow').addEventListener('click', () => {
+            const btn = document.getElementById('prop-text-shadow');
+            btn.classList.toggle('active');
+            if (this.onPropertyChange) {
+                this.onPropertyChange('text', 'textShadow', btn.classList.contains('active'));
+            }
+        });
 
         document.getElementById('prop-clear-text-bg').addEventListener('click', () => {
             const input = document.getElementById('prop-text-bg');
             input.value = '#ffffff';
             if (this.onPropertyChange) this.onPropertyChange('text', 'backgroundColor', '');
+        });
+
+        document.getElementById('prop-clear-text-stroke').addEventListener('click', () => {
+            document.getElementById('prop-text-stroke-width').value = '0';
+            if (this.onPropertyChange) {
+                this.onPropertyChange('text', 'textStrokeWidth', 0);
+                this.onPropertyChange('text', 'textStrokeColor', 'transparent');
+            }
         });
 
         const shapeProps = ['prop-fill', 'prop-stroke', 'prop-stroke-width', 'prop-shape-opacity', 'prop-shape-rotation', 'prop-corner-radius'];
@@ -261,11 +299,29 @@ class Toolbar {
                 this.onPropertyChange('text', 'fontSize', parseFloat(val));
                 document.getElementById('prop-font-size').value = val;
                 break;
+            case 'prop-font-weight':
+                this.onPropertyChange('text', 'fontWeight', parseInt(val, 10));
+                document.getElementById('prop-bold').classList.toggle('active', parseInt(val, 10) >= 700);
+                break;
             case 'prop-text-color':
                 this.onPropertyChange('text', 'fill', val);
                 break;
             case 'prop-text-bg':
                 this.onPropertyChange('text', 'backgroundColor', val);
+                break;
+            case 'prop-line-height':
+                this._syncChipGroup(id, val);
+                this.onPropertyChange('text', 'lineHeight', parseFloat(val));
+                break;
+            case 'prop-char-spacing':
+                this._syncChipGroup(id, val);
+                this.onPropertyChange('text', 'charSpacing', parseFloat(val));
+                break;
+            case 'prop-text-stroke-color':
+                this.onPropertyChange('text', 'textStrokeColor', val);
+                break;
+            case 'prop-text-stroke-width':
+                this.onPropertyChange('text', 'textStrokeWidth', parseFloat(val));
                 break;
             case 'prop-text-opacity':
                 this._syncChipGroup(id, val);
@@ -367,12 +423,30 @@ class Toolbar {
     }
 
     _toggleStyle(style) {
+        const propMap = { strikethrough: 'linethrough' };
+        const prop = propMap[style] || style;
         const btn = document.getElementById(`prop-${style}`);
         btn.classList.toggle('active');
         const isActive = btn.classList.contains('active');
         if (this.onPropertyChange) {
-            this.onPropertyChange('text', style, isActive);
+            this.onPropertyChange('text', prop, isActive);
+            if (style === 'bold') {
+                const weightEl = document.getElementById('prop-font-weight');
+                if (weightEl) {
+                    weightEl.value = isActive ? '700' : '400';
+                }
+            }
         }
+    }
+
+    _fontWeightValue(obj) {
+        const w = obj.fontWeight;
+        if (w === 900 || w === '900' || w === 'black') return 900;
+        if (w === 'bold' || w === 700 || w === '700' || (typeof w === 'number' && w >= 700)) return 700;
+        if (w === 600 || w === '600') return 600;
+        if (w === 500 || w === '500') return 500;
+        if (w === 300 || w === '300' || w === 'light') return 300;
+        return 400;
     }
 
     setActiveTool(tool) {
@@ -651,11 +725,24 @@ class Toolbar {
 
         document.getElementById('prop-font-family').value = obj.fontFamily || 'Helvetica';
         document.getElementById('prop-font-size').value = Math.round(obj.fontSize || 16);
+        document.getElementById('prop-font-weight').value = String(this._fontWeightValue(obj));
         document.getElementById('prop-text-color').value = this._colorToHex(obj.fill || '#000000');
 
         const bgColor = obj.backgroundColor;
         if (bgColor && bgColor !== 'transparent') {
             document.getElementById('prop-text-bg').value = this._colorToHex(bgColor);
+        }
+
+        const lineHeight = obj.lineHeight != null ? obj.lineHeight : 1.2;
+        this._setControlValue('prop-line-height', lineHeight);
+
+        const charSpacing = obj.charSpacing != null ? obj.charSpacing : 0;
+        this._setControlValue('prop-char-spacing', charSpacing);
+
+        const strokeW = obj.strokeWidth || 0;
+        this._setControlValue('prop-text-stroke-width', strokeW);
+        if (obj.stroke && obj.stroke !== 'transparent') {
+            document.getElementById('prop-text-stroke-color').value = this._colorToHex(obj.stroke);
         }
 
         const opacity = Math.round((obj.opacity || 1) * 100);
@@ -664,9 +751,26 @@ class Toolbar {
         const angle = Math.round(obj.angle || 0);
         this._setControlValue('prop-text-rotation', angle);
 
-        document.getElementById('prop-bold').classList.toggle('active', obj.fontWeight === 'bold' || obj.fontWeight >= 700);
+        const weight = this._fontWeightValue(obj);
+        document.getElementById('prop-bold').classList.toggle('active', weight >= 700);
         document.getElementById('prop-italic').classList.toggle('active', obj.fontStyle === 'italic');
         document.getElementById('prop-underline').classList.toggle('active', obj.underline === true);
+        document.getElementById('prop-strikethrough').classList.toggle('active', obj.linethrough === true);
+
+        const align = this.editor?.getObjectPageAlign
+            ? this.editor.getObjectPageAlign(obj)
+            : (obj.textAlign || 'left');
+        document.querySelectorAll('.prop-align-btn').forEach((btn) => {
+            btn.classList.toggle('active', btn.dataset.align === align);
+        });
+
+        const textCase = obj._textCase || 'none';
+        document.querySelectorAll('.prop-case-btn').forEach((btn) => {
+            btn.classList.toggle('active', btn.dataset.case === textCase);
+        });
+
+        const hasShadow = !!(obj.shadow && (obj.shadow.color || obj.shadow.blur));
+        document.getElementById('prop-text-shadow').classList.toggle('active', hasShadow);
     }
 
     _showShapeProps(obj) {

@@ -8,7 +8,8 @@ class App {
         this.formLayer = new PDFFormLayer();
         this.toolbar = new Toolbar();
         this.undoStack = [];
-        this.redoStack = [];
+        this.undoIndex = -1;
+        this._suppressUndoRecording = false;
         this.maxHistory = 50;
         this.pageStates = {};
         this.pageFormStates = {};
@@ -93,7 +94,7 @@ class App {
             }
         };
         this.editor.onCanvasModified = () => {
-            this._pushUndo();
+            this._recordUndoState();
             this._markDirty();
         };
         this.editor.onLinkAreaDrawn = (area) => this._onLinkAreaDrawn(area);
@@ -155,6 +156,8 @@ class App {
             btnExportPage: document.getElementById('btn-export-page'),
             btnExtractText: document.getElementById('btn-extract-text'),
             editorContextMenu: document.getElementById('editor-context-menu'),
+            contextAlignSection: document.getElementById('context-align-section'),
+            contextMenuDivider: document.getElementById('context-menu-divider'),
             btnContextDelete: document.getElementById('btn-context-delete'),
             btnContextPin: document.getElementById('btn-context-pin'),
             btnContextUnpin: document.getElementById('btn-context-unpin'),
@@ -350,14 +353,46 @@ class App {
         this.els.btnDuplicatePage.addEventListener('click', () => this._duplicateCurrentPage());
         this.els.btnExportPage.addEventListener('click', () => this._exportCurrentPage());
         this.els.btnExtractText.addEventListener('click', () => this._extractCurrentPageText());
-        this.els.btnContextDelete.addEventListener('click', () => this._deleteSelectedObjects());
-        this.els.btnContextPin.addEventListener('click', () => this._toggleStickyPin(true));
-        this.els.btnContextUnpin.addEventListener('click', () => this._toggleStickyPin(false));
+        this.els.btnContextDelete.addEventListener('mousedown', (e) => e.stopPropagation());
+        this.els.btnContextDelete.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._deleteSelectedObjects();
+        });
+        this.els.btnContextPin.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._toggleStickyPin(true);
+        });
+        this.els.btnContextUnpin.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._toggleStickyPin(false);
+        });
+
+        document.querySelectorAll('[data-page-align]').forEach((btn) => {
+            btn.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            });
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this._alignSelectionToPageMargins(btn.dataset.pageAlign);
+            });
+        });
 
         this.els.imageInput.addEventListener('change', (e) => this._onImageSelected(e));
 
         this.els.stickyPopupClose.addEventListener('click', () => this._hideStickyPopup(true));
         this.els.stickyPopupTextarea.addEventListener('input', () => this._saveStickyPopupText());
+
+        this.els.editorContextMenu.addEventListener('mousedown', (e) => {
+            e.stopPropagation();
+        });
+
+        this.els.canvasWrapper.addEventListener('contextmenu', (e) => {
+            if (this.els.canvasWrapper.contains(e.target)) {
+                e.preventDefault();
+            }
+        });
 
         document.addEventListener('click', (e) => {
             if (!this.els.editorContextMenu.contains(e.target)) {
@@ -365,7 +400,13 @@ class App {
             }
         });
         document.addEventListener('contextmenu', (e) => {
-            if (!this.els.editorContextMenu.contains(e.target)) {
+            const onCanvas = this.els.canvasWrapper.contains(e.target);
+            const onAppMenu = this.els.editorContextMenu.contains(e.target);
+            if (onCanvas) {
+                e.preventDefault();
+                return;
+            }
+            if (!onAppMenu) {
                 this._hideCanvasContextMenu();
             }
         });
@@ -1026,7 +1067,7 @@ class App {
         this.pageSizes = data.page_sizes || [];
         this.currentPage = initialPage;
         this.undoStack = [];
-        this.redoStack = [];
+        this.undoIndex = -1;
         if (clearDraft) {
             this.pageStates = {};
             this.pageFormStates = {};
@@ -1148,8 +1189,20 @@ class App {
         } finally {
             this.isLoading = false;
             this.isDirty = false;
+            this.undoStack = [];
+            this.undoIndex = -1;
+            this._seedUndoHistory();
             this._updateSaveUnsavedIndicator();
         }
+    }
+
+    _seedUndoHistory() {
+        if (!this.editor?.canvas) return;
+        this.editor.assignIdsToAllObjects();
+        this.editor.canvas.getObjects().forEach((obj) => obj.setCoords());
+        this.editor.renderAll();
+        this._recordUndoState();
+        this._updateUndoRedoButtons();
     }
 
     async _loadPageElements(pageNum) {
@@ -1158,6 +1211,7 @@ class App {
             if (data.elements && data.elements.length > 0) {
                 this.editor.loadElements(data.elements);
             }
+            this.editor.assignIdsToAllObjects();
         } catch (err) {
             console.warn('Failed to load page elements:', err);
         }
@@ -1255,7 +1309,19 @@ class App {
             btnUnpin.style.display = 'none';
         }
 
+        const textObjects = (context.selectedObjects || []).filter((o) => this.editor.isTextObject(o));
+        this._contextMenuTextObjects = textObjects;
+
+        const showPageAlign = textObjects.length >= 2;
+        this.els.contextAlignSection.style.display = showPageAlign ? 'block' : 'none';
+        this.els.contextMenuDivider.style.display = showPageAlign ? 'block' : 'none';
+
         menu.style.display = 'block';
+
+        if (typeof lucide !== 'undefined' && !menu.dataset.iconsReady) {
+            lucide.createIcons({ nodes: [menu] });
+            menu.dataset.iconsReady = '1';
+        }
 
         const { innerWidth, innerHeight } = window;
         const menuRect = menu.getBoundingClientRect();
@@ -1266,8 +1332,38 @@ class App {
         menu.style.top = `${Math.max(12, top)}px`;
     }
 
+    _pushAlignUndoPair(beforeItems, afterItems) {
+        if (!beforeItems?.length || !afterItems?.length) return;
+        this._pushUndoEntry({ kind: 'positions', items: beforeItems });
+        this._pushUndoEntry({ kind: 'positions', items: afterItems });
+    }
+
+    _alignSelectionToPageMargins(mode) {
+        const objects = (this._contextMenuTextObjects || []).filter((o) => this.editor.isTextObject(o));
+        this._hideCanvasContextMenu();
+        if (objects.length < 2) return;
+
+        const beforePositions = this.editor.captureObjectPositionsForUndo(objects);
+
+        this._suppressUndoRecording = true;
+        let ok = false;
+        try {
+            ok = this.editor.alignTextObjectsToPageMargins(objects, mode, { skipModifiedCallback: true });
+        } finally {
+            this._suppressUndoRecording = false;
+        }
+
+        if (ok) {
+            const afterPositions = this.editor.captureObjectPositionsForUndo(objects);
+            this._pushAlignUndoPair(beforePositions, afterPositions);
+            this._markDirty();
+        }
+        this._contextMenuTextObjects = null;
+    }
+
     _hideCanvasContextMenu() {
         this.els.editorContextMenu.style.display = 'none';
+        this._contextMenuTextObjects = null;
     }
 
     _deleteSelectedObjects() {
@@ -1413,39 +1509,70 @@ class App {
         await API.savePage(this.sessionId, this.currentPage, elements, deleted_originals, forms);
     }
 
-    _pushUndo() {
-        if (this.isLoading) return;
-        const state = this.editor.toJSON();
-        this.undoStack.push(state);
+    _pushUndoEntry(entry) {
+        if (!entry) return;
+
+        if (this.undoIndex >= 0 && this.undoIndex < this.undoStack.length - 1) {
+            this.undoStack = this.undoStack.slice(0, this.undoIndex + 1);
+        }
+
+        this.undoStack.push(entry);
         if (this.undoStack.length > this.maxHistory) {
             this.undoStack.shift();
         }
-        this.redoStack = [];
+        this.undoIndex = this.undoStack.length - 1;
         this._updateUndoRedoButtons();
     }
 
-    async _undo() {
-        if (this.undoStack.length <= 1) return;
-        const current = this.undoStack.pop();
-        this.redoStack.push(current);
-        const prev = this.undoStack[this.undoStack.length - 1];
-        if (prev) {
-            await this.editor.loadFromJSON(prev);
+    _recordUndoState() {
+        if (this.isLoading || this._suppressUndoRecording) return;
+        if (!this.editor?.canvas) return;
+
+        try {
+            const items = this.editor.captureObjectPositions();
+            if (!items.length) return;
+            this._pushUndoEntry({ kind: 'positions', items });
+        } catch (err) {
+            console.warn('Failed to record undo state:', err);
         }
+    }
+
+    async _applyUndoState(state) {
+        if (!state) return;
+        this._suppressUndoRecording = true;
+        try {
+            if (state.kind === 'positions') {
+                this.editor.restoreObjectPositions(state.items);
+            } else if (state.kind === 'snapshot') {
+                await this.editor.restoreUndoSnapshot(state);
+            }
+            this.toolbar.showPropertiesForObjects(this.editor.getActiveObjects());
+        } finally {
+            this._suppressUndoRecording = false;
+        }
+    }
+
+    async _undo() {
+        if (this.undoIndex <= 0) return;
+        this.undoIndex -= 1;
+        await this._applyUndoState(this.undoStack[this.undoIndex]);
+        this._markDirty();
         this._updateUndoRedoButtons();
     }
 
     async _redo() {
-        if (this.redoStack.length === 0) return;
-        const state = this.redoStack.pop();
-        this.undoStack.push(state);
-        await this.editor.loadFromJSON(state);
+        if (this.undoIndex >= this.undoStack.length - 1) return;
+        this.undoIndex += 1;
+        await this._applyUndoState(this.undoStack[this.undoIndex]);
+        this._markDirty();
         this._updateUndoRedoButtons();
     }
 
     _updateUndoRedoButtons() {
-        this.els.btnUndo.disabled = this.undoStack.length <= 1;
-        this.els.btnRedo.disabled = this.redoStack.length === 0;
+        const canUndo = this.undoIndex > 0;
+        const canRedo = this.undoIndex >= 0 && this.undoIndex < this.undoStack.length - 1;
+        this.els.btnUndo.disabled = !canUndo;
+        this.els.btnRedo.disabled = !canRedo;
     }
 
     _onToolChange(tool) {
@@ -1683,6 +1810,23 @@ class App {
 
         switch (type) {
             case 'text':
+                if (prop === 'pageAlign') {
+                    const targets = obj.type === 'activeSelection'
+                        ? obj.getObjects().filter((o) => this.editor.isTextObject(o))
+                        : [obj];
+                    if (!targets.length) return;
+                    const before = this.editor.captureObjectPositionsForUndo(targets);
+                    targets.forEach((t) => this._applyTextProp(t, prop, value));
+                    const after = this.editor.captureObjectPositionsForUndo(targets);
+                    this._pushAlignUndoPair(before, after);
+                    targets.forEach((t) => {
+                        if (t.origin === 'pdf') t._modified = true;
+                        t.setCoords();
+                    });
+                    this.editor.renderAll();
+                    this._markDirty();
+                    return;
+                }
                 this._applyTextProp(obj, prop, value);
                 break;
             case 'shape':
@@ -1702,6 +1846,7 @@ class App {
 
         obj.setCoords();
         this.editor.renderAll();
+        this._markDirty();
     }
 
     _applyTextProp(obj, prop, value) {
@@ -1711,6 +1856,9 @@ class App {
                 break;
             case 'fontSize':
                 obj.set('fontSize', value);
+                break;
+            case 'fontWeight':
+                obj.set('fontWeight', value);
                 break;
             case 'fill':
                 obj.set('fill', value);
@@ -1725,7 +1873,7 @@ class App {
                 obj.set('angle', value);
                 break;
             case 'bold':
-                obj.set('fontWeight', value ? 'bold' : 'normal');
+                obj.set('fontWeight', value ? 700 : 400);
                 break;
             case 'italic':
                 obj.set('fontStyle', value ? 'italic' : 'normal');
@@ -1733,7 +1881,69 @@ class App {
             case 'underline':
                 obj.set('underline', value);
                 break;
+            case 'linethrough':
+                obj.set('linethrough', value);
+                break;
+            case 'textAlign':
+                obj.set('textAlign', value);
+                break;
+            case 'pageAlign':
+                this.editor.alignTextToPageMargin(obj, value);
+                if (value !== 'justify') {
+                    obj.set('textAlign', value);
+                }
+                break;
+            case 'lineHeight':
+                obj.set('lineHeight', value);
+                break;
+            case 'charSpacing':
+                obj.set('charSpacing', value);
+                break;
+            case 'textCase': {
+                obj._textCase = value;
+                const raw = obj.text || '';
+                let transformed = raw;
+                if (value === 'upper') transformed = raw.toUpperCase();
+                else if (value === 'lower') transformed = raw.toLowerCase();
+                else if (value === 'title') {
+                    transformed = raw.replace(/\w\S*/g, (t) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase());
+                }
+                if (transformed !== raw) obj.set('text', transformed);
+                break;
+            }
+            case 'textStrokeColor':
+                if (obj.strokeWidth > 0 || document.getElementById('prop-text-stroke-width')?.value > 0) {
+                    obj.set('stroke', value);
+                } else {
+                    obj.set('stroke', value);
+                }
+                break;
+            case 'textStrokeWidth':
+                obj.set('strokeWidth', value);
+                if (value > 0) {
+                    const colorEl = document.getElementById('prop-text-stroke-color');
+                    const strokeColor = colorEl ? colorEl.value : '#000000';
+                    if (!obj.stroke || obj.stroke === 'transparent') {
+                        obj.set('stroke', strokeColor);
+                    }
+                } else {
+                    obj.set('stroke', 'transparent');
+                }
+                break;
+            case 'textShadow':
+                if (value) {
+                    obj.set('shadow', new fabric.Shadow({
+                        color: 'rgba(0,0,0,0.35)',
+                        blur: 5,
+                        offsetX: 2,
+                        offsetY: 2,
+                    }));
+                } else {
+                    obj.set('shadow', null);
+                }
+                break;
         }
+        obj.dirty = true;
     }
 
     _applyShapeProp(obj, prop, value) {
@@ -1920,7 +2130,7 @@ class App {
         reader.onload = async (ev) => {
             const dataUrl = ev.target.result;
             await this.editor.addImage(dataUrl);
-            this._pushUndo();
+            this._recordUndoState();
         };
         reader.readAsDataURL(file);
         e.target.value = '';
@@ -2798,7 +3008,7 @@ class App {
             const result = await API.ocrPage(this.sessionId, this.currentPage);
             if (result.elements?.length) {
                 await this.editor.loadElements(result.elements);
-                this._pushUndo();
+                this._recordUndoState();
             }
             this._showToast('OCR complete — text elements added', 'success');
         } catch (err) {

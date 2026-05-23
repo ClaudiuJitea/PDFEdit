@@ -378,7 +378,7 @@ class SignatureManager {
                 // Auto-place signature on current canvas!
                 if (window.app && window.app.editor) {
                     await window.app.editor.addImage(dataUrl);
-                    window.app._pushUndo();
+                    window.app._recordUndoState();
                     
                     // Switch tool back to select so user can directly drag & position it
                     window.app._onToolChange('select');
@@ -516,7 +516,7 @@ class SignatureManager {
             card.addEventListener('click', () => {
                 if (window.app && window.app.editor) {
                     window.app.editor.addImage(dataUrl).then(() => {
-                        window.app._pushUndo();
+                        window.app._recordUndoState();
                         // Automatically switch active tool back to select
                         window.app._onToolChange('select');
                     });

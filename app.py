@@ -102,6 +102,16 @@ def pdf_font_name(family, bold=False, italic=False):
     return "helv"
 
 
+def pdf_text_align(align):
+    mapping = {
+        "left": fitz.TEXT_ALIGN_LEFT,
+        "center": fitz.TEXT_ALIGN_CENTER,
+        "right": fitz.TEXT_ALIGN_RIGHT,
+        "justify": fitz.TEXT_ALIGN_JUSTIFY,
+    }
+    return mapping.get((align or "left").lower(), fitz.TEXT_ALIGN_LEFT)
+
+
 def get_font_flags(bold=False, italic=False):
     flags = 0
     if bold:
@@ -2231,9 +2241,11 @@ def save_page(session_id, page_num):
             continue
 
         font_family = elem.get("fontFamily", "Helvetica")
-        bold = elem.get("bold", False) or elem.get("fontWeight", "") == "bold"
+        fw = elem.get("fontWeight", "")
+        bold = elem.get("bold", False) or fw == "bold" or (isinstance(fw, (int, float)) and fw >= 700)
         italic = elem.get("italic", False) or elem.get("fontStyle", "") == "italic"
         pdf_font = pdf_font_name(font_family, bold, italic)
+        text_align = pdf_text_align(elem.get("textAlign", "left"))
 
         font_size = float(elem.get("fontSize", 14)) / 2.0
         color_hex = elem.get("fill", "#000000")
@@ -2274,7 +2286,7 @@ def save_page(session_id, page_num):
                     fontname=pdf_font,
                     fontsize=max(font_size, 4),
                     color=color_val,
-                    align=fitz.TEXT_ALIGN_LEFT,
+                    align=text_align,
                 )
                 if rc < 0:
                     expanded = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y1 + abs(rc) + font_size)
@@ -2284,6 +2296,7 @@ def save_page(session_id, page_num):
                         fontname=pdf_font,
                         fontsize=max(font_size, 4),
                         color=color_val,
+                        align=text_align,
                     )
             except Exception:
                 try:

@@ -73,6 +73,126 @@ class PDFEditor {
             lineStyle: 'solid',
         };
         this._linkDrawMode = false;
+        this._objectIdSeq = 0;
+        this._undoProps = [
+            '_elementType', '_isRedaction', 'origin', 'originalPdfBbox', '_modified',
+            '_stickyColor', '_stickyText', '_stickyPinned', '_textCase', '_pdfEditId',
+        ];
+    }
+
+    ensureObjectId(obj) {
+        if (!obj) return null;
+        const pdfBbox = obj.originalPdfBbox;
+        if (pdfBbox && pdfBbox.length >= 4) {
+            const key = pdfBbox.map((n) => Math.round(n * 10) / 10).join('_');
+            obj._pdfEditId = `pdf-${key}`;
+            return obj._pdfEditId;
+        }
+        if (!obj._pdfEditId) {
+            this._objectIdSeq += 1;
+            obj._pdfEditId = `pe-${this._objectIdSeq}`;
+        }
+        return obj._pdfEditId;
+    }
+
+    _objectOriginPoint(obj) {
+        obj.setCoords();
+        if (typeof obj.getPointByOrigin === 'function') {
+            return obj.getPointByOrigin('left', 'top');
+        }
+        return { x: obj.left || 0, y: obj.top || 0 };
+    }
+
+    _setObjectOriginPoint(obj, left, top) {
+        if (typeof obj.setPositionByOrigin === 'function' && typeof fabric !== 'undefined') {
+            obj.setPositionByOrigin(new fabric.Point(left, top), 'left', 'top');
+        } else {
+            obj.set({ left, top });
+        }
+    }
+
+    _registerCanvasObject(obj) {
+        this.ensureObjectId(obj);
+        return obj;
+    }
+
+    assignIdsToAllObjects() {
+        if (!this.canvas) return;
+        this.canvas.getObjects().forEach((obj) => this.ensureObjectId(obj));
+    }
+
+    _discardActiveSelection() {
+        const active = this.canvas?.getActiveObject();
+        if (active && active.type === 'activeSelection') {
+            this.canvas.discardActiveObject();
+        }
+    }
+
+    captureObjectPositions(objects) {
+        const targets = objects && objects.length
+            ? objects
+            : this.canvas.getObjects().filter((obj) => !obj._isLinkOverlay && !obj._isTableOverlay && !obj._isSearchHighlight);
+        return targets.map((obj) => {
+            const point = this._objectOriginPoint(obj);
+            const entry = {
+                id: this.ensureObjectId(obj),
+                left: point.x,
+                top: point.y,
+                angle: obj.angle || 0,
+            };
+            if (obj.width != null) {
+                entry.width = obj.width;
+            }
+            if (obj.textAlign) {
+                entry.textAlign = obj.textAlign;
+            }
+            return entry;
+        });
+    }
+
+    captureObjectPositionsForUndo(objects) {
+        this._discardActiveSelection();
+        (objects || []).forEach((obj) => obj.setCoords());
+        return this.captureObjectPositions(objects);
+    }
+
+    restoreObjectPositions(items) {
+        if (!this.canvas || !items?.length) return;
+
+        this._discardActiveSelection();
+
+        const byId = new Map();
+        this.canvas.getObjects().forEach((obj) => {
+            byId.set(this.ensureObjectId(obj), obj);
+        });
+
+        items.forEach(({ id, left, top, angle, width, textAlign }) => {
+            const obj = byId.get(id);
+            if (!obj) return;
+            this._setObjectOriginPoint(obj, left, top);
+            const updates = {};
+            if (angle != null) {
+                updates.angle = angle;
+            }
+            if (width != null) {
+                updates.width = width;
+            }
+            if (textAlign != null) {
+                updates.textAlign = textAlign;
+            }
+            if (Object.keys(updates).length) {
+                obj.set(updates);
+            }
+            if (width != null && typeof obj.initDimensions === 'function') {
+                obj.initDimensions();
+            }
+            obj.setCoords();
+            if (obj.origin === 'pdf') {
+                obj._modified = true;
+            }
+        });
+
+        this.canvas.requestRenderAll();
     }
 
     init(canvasEl, width, height) {
@@ -139,6 +259,28 @@ class PDFEditor {
         this.canvas.on('mouse:dblclick', (opt) => this._onDoubleClick(opt));
 
         this._setupDrawingBrush();
+        this._suppressNativeContextMenu(canvasEl);
+    }
+
+    _suppressNativeContextMenu(canvasEl) {
+        const preventNativeMenu = (e) => {
+            e.preventDefault();
+        };
+        const onCanvasContextMenu = (e) => {
+            e.preventDefault();
+            this._onRightClick({ e, button: 2, target: this.canvas.findTarget(e) });
+        };
+
+        canvasEl.addEventListener('contextmenu', onCanvasContextMenu);
+        if (this.canvas?.upperCanvasEl) {
+            this.canvas.upperCanvasEl.addEventListener('contextmenu', onCanvasContextMenu);
+        }
+        if (this.canvas?.lowerCanvasEl) {
+            this.canvas.lowerCanvasEl.addEventListener('contextmenu', preventNativeMenu);
+        }
+        if (this.canvas?.wrapperEl) {
+            this.canvas.wrapperEl.addEventListener('contextmenu', onCanvasContextMenu);
+        }
     }
 
     _setupDrawingBrush() {
@@ -235,6 +377,188 @@ class PDFEditor {
         return textTypes.includes(obj._elementType) || textTypes.includes(obj.type);
     }
 
+    isTextObject(obj) {
+        return this._isTextLinkTarget(obj);
+    }
+
+    getPageContentMargins() {
+        const marginX = this.canvasWidth * 0.08;
+        const marginY = this.canvasHeight * 0.06;
+        return {
+            left: marginX,
+            right: this.canvasWidth - marginX,
+            top: marginY,
+            bottom: this.canvasHeight - marginY,
+            centerX: this.canvasWidth / 2,
+            centerY: this.canvasHeight / 2,
+        };
+    }
+
+    _getObjectPageRect(obj) {
+        obj.setCoords();
+        const topLeft = obj.getPointByOrigin('left', 'top');
+        const scaleX = obj.scaleX || 1;
+        const scaleY = obj.scaleY || 1;
+        const textWidth = typeof obj.calcTextWidth === 'function'
+            ? obj.calcTextWidth() * scaleX
+            : 0;
+        const boxWidth = obj.width ? obj.width * scaleX : 0;
+        const width = Math.max(textWidth, boxWidth);
+        const height = (obj.height || obj.fontSize || 16) * scaleY;
+        if (width > 0) {
+            return {
+                left: topLeft.x,
+                top: topLeft.y,
+                width,
+                height,
+            };
+        }
+        return obj.getBoundingRect(false, true);
+    }
+
+    _clampRectToMargins(rectLeft, rectTop, rectWidth, rectHeight, margins) {
+        const maxLeft = Math.max(margins.left, margins.right - rectWidth);
+        const maxTop = Math.max(margins.top, margins.bottom - rectHeight);
+        return {
+            left: Math.min(Math.max(rectLeft, margins.left), maxLeft),
+            top: Math.min(Math.max(rectTop, margins.top), maxTop),
+        };
+    }
+
+    getObjectPageAlign(obj) {
+        if (!obj) return 'left';
+        const margins = this.getPageContentMargins();
+        const rect = this._getObjectPageRect(obj);
+        const right = rect.left + rect.width;
+        const contentWidth = margins.right - margins.left;
+        const tolerance = Math.max(12, contentWidth * 0.02);
+
+        if (obj.textAlign === 'justify' && Math.abs(rect.width - contentWidth) <= tolerance + 4) {
+            return 'justify';
+        }
+        if (Math.abs(rect.left - margins.left) <= tolerance) return 'left';
+        if (Math.abs(right - margins.right) <= tolerance) return 'right';
+        if (Math.abs((rect.left + rect.width / 2) - margins.centerX) <= tolerance) return 'center';
+        return obj.textAlign || 'left';
+    }
+
+    alignTextToPageMargin(obj, mode, options = {}) {
+        if (!obj || !this.isTextObject(obj)) return false;
+
+        if (mode === 'justify') {
+            const margins = this.getPageContentMargins();
+            const point = this._objectOriginPoint(obj);
+            const contentWidth = margins.right - margins.left;
+            this._setObjectOriginPoint(obj, margins.left, point.y);
+            obj.set({ width: contentWidth, textAlign: 'justify' });
+            if (typeof obj.initDimensions === 'function') {
+                obj.initDimensions();
+            }
+            obj.setCoords();
+            if (obj.origin === 'pdf') {
+                obj._modified = true;
+            }
+            this.canvas.requestRenderAll();
+            if (!options.skipModifiedCallback && this.onCanvasModified) {
+                this.onCanvasModified();
+            }
+            return true;
+        }
+
+        return this.alignTextObjectsToPageMargins([obj], mode, options);
+    }
+
+    alignTextObjectsToPageMargins(objects, mode, options = {}) {
+        if (!objects || objects.length === 0) return false;
+
+        const textObjects = objects.filter((o) => this.isTextObject(o));
+        if (textObjects.length === 0) return false;
+
+        const active = this.canvas.getActiveObject();
+        if (active && active.type === 'activeSelection') {
+            this.canvas.discardActiveObject();
+        }
+
+        const margins = this.getPageContentMargins();
+        const rects = textObjects.map((obj) => ({ obj, rect: this._getObjectPageRect(obj) }));
+
+        let minLeft = Infinity;
+        let minTop = Infinity;
+        let maxRight = -Infinity;
+        let maxBottom = -Infinity;
+        rects.forEach(({ rect }) => {
+            minLeft = Math.min(minLeft, rect.left);
+            minTop = Math.min(minTop, rect.top);
+            maxRight = Math.max(maxRight, rect.left + rect.width);
+            maxBottom = Math.max(maxBottom, rect.top + rect.height);
+        });
+
+        const groupWidth = maxRight - minLeft;
+        const groupHeight = maxBottom - minTop;
+        let dx = 0;
+        let dy = 0;
+
+        switch (mode) {
+            case 'left':
+                dx = margins.left - minLeft;
+                break;
+            case 'right':
+                dx = margins.right - maxRight;
+                break;
+            case 'center':
+                dx = margins.centerX - (minLeft + groupWidth / 2);
+                break;
+            case 'top':
+                dy = margins.top - minTop;
+                break;
+            case 'middle':
+                dy = margins.centerY - (minTop + groupHeight / 2);
+                break;
+            case 'bottom':
+                dy = margins.bottom - maxBottom;
+                break;
+            default:
+                return false;
+        }
+
+        const clampedDx = (() => {
+            let shift = dx;
+            if (minLeft + shift < margins.left) shift += margins.left - (minLeft + shift);
+            if (maxRight + shift > margins.right) shift -= (maxRight + shift) - margins.right;
+            return shift;
+        })();
+        const clampedDy = (() => {
+            let shift = dy;
+            if (minTop + shift < margins.top) shift += margins.top - (minTop + shift);
+            if (maxBottom + shift > margins.bottom) shift -= (maxBottom + shift) - margins.bottom;
+            return shift;
+        })();
+
+        textObjects.forEach((obj) => {
+            const point = this._objectOriginPoint(obj);
+            this._setObjectOriginPoint(obj, point.x + clampedDx, point.y + clampedDy);
+            if (obj.origin === 'pdf') {
+                obj._modified = true;
+            }
+            obj.setCoords();
+        });
+
+        if (textObjects.length > 1) {
+            const selection = new fabric.ActiveSelection(textObjects, { canvas: this.canvas });
+            this.canvas.setActiveObject(selection);
+            selection.setCoords();
+        } else if (textObjects.length === 1) {
+            this.canvas.setActiveObject(textObjects[0]);
+        }
+
+        this.canvas.requestRenderAll();
+        if (!options.skipModifiedCallback && this.onCanvasModified) {
+            this.onCanvasModified();
+        }
+        if (this.onObjectSelected) this.onObjectSelected(textObjects);
+        return true;
+    }
+
     _syncLinkToolInteractivity() {
         if (!this.canvas || this.currentTool !== 'link') return;
 
@@ -289,7 +613,17 @@ class PDFEditor {
 
     _onMouseDown(opt) {
         if (opt.button === 3 || opt.e?.button === 2) {
-            this._onRightClick(opt);
+            // Selection prep only; menu opens on contextmenu to avoid browser menu conflict.
+            const target = opt.target || this.canvas.findTarget(opt.e);
+            if (!target || target.selectable === false) return;
+
+            const activeObjects = this.canvas.getActiveObjects();
+            const isAlreadySelected = activeObjects.includes(target) || this.canvas.getActiveObject() === target;
+            if (!isAlreadySelected) {
+                this.canvas.setActiveObject(target);
+                this.canvas.requestRenderAll();
+                if (this.onObjectSelected) this.onObjectSelected(this.canvas.getActiveObjects());
+            }
             return;
         }
 
@@ -423,8 +757,9 @@ class PDFEditor {
     _onRightClick(opt) {
         const target = opt.target || this.canvas.findTarget(opt.e);
 
-        opt.e.preventDefault();
-        opt.e.stopPropagation();
+        if (opt.e) {
+            opt.e.preventDefault();
+        }
 
         if (!target || target.selectable === false) {
             this.canvas.discardActiveObject();
@@ -443,12 +778,17 @@ class PDFEditor {
             if (this.onObjectSelected) this.onObjectSelected(this.canvas.getActiveObjects());
         }
 
-        if (this.onContextMenuRequested) {
+        const selected = this.canvas.getActiveObjects();
+        const textObjects = selected.filter((o) => this.isTextObject(o));
+
+        if (this.onContextMenuRequested && opt.e) {
             this.onContextMenuRequested({
                 x: opt.e.clientX,
                 y: opt.e.clientY,
-                hasSelection: this.canvas.getActiveObjects().length > 0,
+                hasSelection: selected.length > 0,
                 target: target,
+                selectedObjects: selected,
+                textObjectCount: textObjects.length,
             });
         }
     }
@@ -460,11 +800,17 @@ class PDFEditor {
             width: 200,
             fontSize: 16 * this.pdfScale,
             fontFamily: 'Helvetica',
+            fontWeight: 400,
             fill: '#000000',
+            lineHeight: 1.2,
+            charSpacing: 0,
+            textAlign: 'left',
             editable: true,
             _elementType: 'text',
+            _textCase: 'none',
         });
         this.canvas.add(textbox);
+        this._registerCanvasObject(textbox);
         this.canvas.setActiveObject(textbox);
         textbox.enterEditing();
         textbox.selectAll();
@@ -886,6 +1232,7 @@ class PDFEditor {
                 console.warn('Failed to load element:', elem, e);
             }
         });
+        this.assignIdsToAllObjects();
         this.canvas.renderAll();
     }
 
@@ -897,21 +1244,51 @@ class PDFEditor {
 
         switch (elem.type) {
             case 'text': {
-                const text = new fabric.IText(elem.text || '', {
+                const isPdf = elem.origin === 'pdf';
+                const fontWeight = elem.fontWeight != null
+                    ? elem.fontWeight
+                    : (elem.bold ? 'bold' : 'normal');
+                const textOpts = {
                     left: bbox[0],
                     top: bbox[1],
                     fontSize: elem.fontSize || 16,
                     fontFamily: elem.fontFamily || 'Helvetica',
                     fill: elem.fill || '#000000',
-                    fontWeight: elem.bold ? 'bold' : 'normal',
+                    fontWeight,
                     fontStyle: elem.italic ? 'italic' : 'normal',
-                    lineHeight: 1,
+                    underline: !!elem.underline,
+                    linethrough: !!(elem.linethrough || elem.strikeout),
+                    lineHeight: elem.lineHeight != null ? elem.lineHeight : 1.2,
+                    charSpacing: elem.charSpacing != null ? elem.charSpacing : 0,
+                    textAlign: elem.textAlign || 'left',
                     editable: true,
                     _elementType: 'text',
-                    origin: 'pdf',
-                    originalPdfBbox: originPdfBbox,
-                });
+                    _textCase: elem.textCase || 'none',
+                };
+                if (elem.opacity != null) textOpts.opacity = elem.opacity;
+                if (elem.backgroundColor) textOpts.backgroundColor = elem.backgroundColor;
+                if (elem.angle != null) textOpts.angle = elem.angle;
+                if (elem.stroke && elem.stroke !== 'transparent') {
+                    textOpts.stroke = elem.stroke;
+                    textOpts.strokeWidth = elem.strokeWidth || 1;
+                }
+                if (elem.textShadow) {
+                    textOpts.shadow = new fabric.Shadow({
+                        color: 'rgba(0,0,0,0.35)',
+                        blur: 5,
+                        offsetX: 2,
+                        offsetY: 2,
+                    });
+                }
+                if (isPdf) {
+                    textOpts.origin = 'pdf';
+                    textOpts.originalPdfBbox = originPdfBbox;
+                }
+                const text = isPdf
+                    ? new fabric.IText(elem.text || '', textOpts)
+                    : new fabric.Textbox(elem.text || '', { ...textOpts, width: Math.max(bbox[2] - bbox[0], 80) });
                 this.canvas.add(text);
+                this._registerCanvasObject(text);
                 break;
             }
             case 'image': {
@@ -1389,13 +1766,27 @@ class PDFEditor {
                 base.fontFamily = obj.fontFamily || 'Helvetica';
                 base.fontSize = obj.fontSize || 16;
                 base.fill = typeof obj.fill === 'string' ? obj.fill : '#000000';
-                base.bold = obj.fontWeight === 'bold' || obj.fontWeight >= 700;
+                const fw = obj.fontWeight;
+                base.fontWeight = fw === 'bold' || (typeof fw === 'number' && fw >= 700) ? 700 : (typeof fw === 'number' ? fw : 400);
+                base.bold = base.fontWeight >= 700;
                 base.italic = obj.fontStyle === 'italic';
                 base.underline = !!obj.underline;
+                base.linethrough = !!obj.linethrough;
+                base.strikeout = !!obj.linethrough;
+                base.textAlign = obj.textAlign || 'left';
+                base.lineHeight = obj.lineHeight != null ? obj.lineHeight : 1.2;
+                base.charSpacing = obj.charSpacing != null ? obj.charSpacing : 0;
+                if (obj._textCase) base.textCase = obj._textCase;
+                if (obj.angle) base.angle = obj.angle;
                 base.opacity = obj.opacity;
                 if (obj.backgroundColor) {
                     base.backgroundColor = obj.backgroundColor;
                 }
+                if (obj.stroke && obj.stroke !== 'transparent' && (obj.strokeWidth || 0) > 0) {
+                    base.stroke = obj.stroke;
+                    base.strokeWidth = obj.strokeWidth;
+                }
+                if (obj.shadow) base.textShadow = true;
             } else if (obj.type === 'group' && obj._elementType === 'stamp') {
                 base.type = 'stamp';
                 const bounds = obj.getBoundingRect();
@@ -1569,12 +1960,113 @@ class PDFEditor {
     }
 
     toJSON() {
-        return this.canvas.toJSON(['_elementType', '_isRedaction', 'origin', 'originalPdfBbox', '_modified', '_stickyColor', '_stickyText', '_stickyPinned']);
+        return this.captureUndoSnapshot();
+    }
+
+    captureUndoSnapshot() {
+        if (!this.canvas) return null;
+        return {
+            kind: 'snapshot',
+            objects: this.canvas.getObjects()
+                .filter((obj) => !obj._isLinkOverlay && !obj._isTableOverlay && !obj._isSearchHighlight)
+                .map((obj) => ({
+                    id: this.ensureObjectId(obj),
+                    json: obj.toObject(this._undoProps),
+                })),
+        };
+    }
+
+    _applySnapshotToObject(obj, json) {
+        if (!obj || !json) return;
+        const isText = json.type === 'i-text' || json.type === 'textbox' || json.type === 'text';
+        if (isText) {
+            obj.set({
+                left: json.left,
+                top: json.top,
+                angle: json.angle || 0,
+                scaleX: json.scaleX ?? 1,
+                scaleY: json.scaleY ?? 1,
+                width: json.width,
+                height: json.height,
+                text: json.text,
+                fill: json.fill,
+                fontSize: json.fontSize,
+                fontFamily: json.fontFamily,
+                fontWeight: json.fontWeight,
+                fontStyle: json.fontStyle,
+                textAlign: json.textAlign,
+                charSpacing: json.charSpacing,
+                lineHeight: json.lineHeight,
+                opacity: json.opacity,
+                underline: json.underline,
+                linethrough: json.linethrough,
+                backgroundColor: json.backgroundColor,
+                stroke: json.stroke,
+                strokeWidth: json.strokeWidth,
+            });
+            if (json._elementType) obj._elementType = json._elementType;
+            if (json.origin) obj.origin = json.origin;
+            if (json.originalPdfBbox) obj.originalPdfBbox = json.originalPdfBbox;
+            if (json._modified) obj._modified = json._modified;
+            if (json._textCase) obj._textCase = json._textCase;
+            return;
+        }
+        obj.set(json);
+    }
+
+    restoreUndoSnapshot(snapshot) {
+        if (!this.canvas || !snapshot?.objects) {
+            return Promise.resolve();
+        }
+
+        const existingById = new Map();
+        this.canvas.getObjects().forEach((obj) => {
+            const id = obj._pdfEditId || this.ensureObjectId(obj);
+            existingById.set(id, obj);
+        });
+
+        const toCreate = [];
+
+        snapshot.objects.forEach(({ id, json }) => {
+            const existing = existingById.get(id);
+            if (existing) {
+                this._applySnapshotToObject(existing, json);
+                existing._pdfEditId = id;
+                existing.setCoords();
+                return;
+            }
+            toCreate.push({ ...json, _pdfEditId: id });
+        });
+
+        if (toCreate.length === 0) {
+            this.canvas.renderAll();
+            return Promise.resolve();
+        }
+
+        return new Promise((resolve) => {
+            fabric.util.enlivenObjects(toCreate, (objects) => {
+                objects.forEach((obj, index) => {
+                    obj._pdfEditId = toCreate[index]._pdfEditId;
+                    this.canvas.add(obj);
+                });
+                this.canvas.renderAll();
+                resolve();
+            });
+        });
     }
 
     loadFromJSON(json) {
+        if (json?.kind === 'snapshot') {
+            return this.restoreUndoSnapshot(json);
+        }
         return new Promise((resolve) => {
             this.canvas.loadFromJSON(json, () => {
+                this.canvas.getObjects().forEach((obj) => {
+                    this.ensureObjectId(obj);
+                    if ((obj.type === 'i-text' || obj.type === 'textbox' || obj.type === 'text') && !obj._elementType) {
+                        obj._elementType = 'text';
+                    }
+                });
                 this.canvas.renderAll();
                 resolve();
             });
