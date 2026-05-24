@@ -4,7 +4,6 @@ import io
 import json
 import os
 import sys
-import tempfile
 import uuid
 import zipfile
 
@@ -13,6 +12,8 @@ from flask import Flask, jsonify, request, send_file, render_template
 from flask_cors import CORS
 from PIL import Image, ImageDraw
 
+import session_storage as store
+
 app = Flask(__name__)
 CORS(app)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
@@ -20,7 +21,9 @@ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 RENDER_SCALE = 2.0
 
 sessions = {}
-temp_files = {}
+
+store.ensure_data_dirs()
+store.migrate_legacy_sessions()
 
 PAGE_SIZES = {
     "A4": (595, 842),
@@ -64,11 +67,239 @@ WIDGET_TYPE_MAP = {
 }
 
 STAMP_PRESETS = {
-    "approved": "Approved",
-    "draft": "Draft",
-    "confidential": "Confidential",
+    "approved": "APPROVED",
+    "draft": "DRAFT",
+    "confidential": "CONFIDENTIAL",
     "void": "VOID",
+    "rejected": "REJECTED",
+    "copy": "COPY",
+    "received": "RECEIVED",
+    "sample": "SAMPLE",
+    "reviewed": "REVIEWED",
+    "original": "ORIGINAL",
+    "urgent": "URGENT",
+    "final": "FINAL",
+    "cancelled": "CANCELLED",
+    "not_for_distribution": "NOT FOR DISTRIBUTION",
 }
+
+STAMP_FALLBACK_LIBRARY = {
+    "approved": {
+        "preset": "approved", "text": "APPROVED", "shape": "rounded",
+        "fill": "#15803d", "fillOpacity": 0.09, "stroke": "#15803d", "textColor": "#14532d",
+        "strokeWidth": 2.5, "dashed": False, "doubleBorder": False, "cross": False,
+        "checkmark": True, "strike": False, "defaultRotation": -8,
+    },
+    "draft": {
+        "preset": "draft", "text": "DRAFT", "shape": "rect",
+        "fill": "#2563eb", "fillOpacity": 0.11, "stroke": "#2563eb", "textColor": "#1d4ed8",
+        "strokeWidth": 2, "dashed": True, "doubleBorder": False, "cross": False,
+        "checkmark": False, "strike": False, "defaultRotation": 0,
+    },
+    "confidential": {
+        "preset": "confidential", "text": "CONFIDENTIAL", "shape": "double",
+        "fill": "#b91c1c", "fillOpacity": 0.1, "stroke": "#b91c1c", "textColor": "#991b1b",
+        "strokeWidth": 2.5, "dashed": False, "doubleBorder": True, "cross": False,
+        "checkmark": False, "strike": False, "defaultRotation": 0,
+    },
+    "void": {
+        "preset": "void", "text": "VOID", "shape": "cross",
+        "fill": "#374151", "fillOpacity": 0.07, "stroke": "#374151", "textColor": "#1f2937",
+        "strokeWidth": 3.5, "dashed": False, "doubleBorder": False, "cross": True,
+        "checkmark": False, "strike": True, "defaultRotation": -22,
+    },
+    "rejected": {
+        "preset": "rejected", "text": "REJECTED", "shape": "rounded",
+        "fill": "#dc2626", "fillOpacity": 0.12, "stroke": "#dc2626", "textColor": "#b91c1c",
+        "strokeWidth": 3, "dashed": False, "doubleBorder": False, "cross": True,
+        "checkmark": False, "strike": False, "defaultRotation": -8,
+    },
+    "copy": {
+        "preset": "copy", "text": "COPY", "shape": "rect",
+        "fill": "#64748b", "fillOpacity": 0.1, "stroke": "#475569", "textColor": "#334155",
+        "strokeWidth": 2, "dashed": True, "doubleBorder": False, "cross": False,
+        "checkmark": False, "strike": False, "defaultRotation": 0,
+    },
+    "received": {
+        "preset": "received", "text": "RECEIVED", "shape": "rounded",
+        "fill": "#0284c7", "fillOpacity": 0.12, "stroke": "#0284c7", "textColor": "#0369a1",
+        "strokeWidth": 2.5, "dashed": False, "doubleBorder": False, "cross": False,
+        "checkmark": False, "strike": False, "defaultRotation": 0,
+    },
+    "sample": {
+        "preset": "sample", "text": "SAMPLE", "shape": "rect",
+        "fill": "#ea580c", "fillOpacity": 0.12, "stroke": "#ea580c", "textColor": "#c2410c",
+        "strokeWidth": 2, "dashed": True, "doubleBorder": False, "cross": False,
+        "checkmark": False, "strike": False, "defaultRotation": 0,
+    },
+}
+
+
+def stamp_config_for_key(stamp_key, stamp_text=None):
+    """Build a stampConfig dict for legacy elements missing stampConfig."""
+    key = (stamp_key or "approved").lower()
+    base = dict(STAMP_FALLBACK_LIBRARY.get(key, STAMP_FALLBACK_LIBRARY["approved"]))
+    label = stamp_text or STAMP_PRESETS.get(key, key.upper())
+    base["text"] = str(label).upper()
+    if key not in STAMP_FALLBACK_LIBRARY:
+        base["preset"] = "approved"
+    return base
+
+
+def stamp_checkmark_points(rect):
+    """Bold two-stroke approval check in the stamp's left column."""
+    w = rect.width
+    h = rect.height
+    x0, y0 = rect.x0, rect.y0
+    col_left = w * 0.07
+    col_right = w * 0.36
+    cx = x0 + (col_left + col_right) / 2.0
+    cy = y0 + h / 2.0
+    span = min(col_right - col_left, h * 0.52)
+    return [
+        fitz.Point(cx - span * 0.38, cy + span * 0.12),
+        fitz.Point(cx - span * 0.08, cy + span * 0.38),
+        fitz.Point(cx + span * 0.42, cy - span * 0.38),
+    ]
+
+
+def stamp_morph(rect, rotation_deg):
+    if not rotation_deg:
+        return None
+    cx = (rect.x0 + rect.x1) / 2.0
+    cy = (rect.y0 + rect.y1) / 2.0
+    return fitz.Point(cx, cy), fitz.Matrix(rotation_deg)
+
+
+def draw_stamp_from_config(page, rect, config):
+    """Render a stamp from the editor's stampConfig payload."""
+    if rect.is_empty or not config:
+        return
+
+    text = (config.get("text") or "STAMP").upper()
+    shape = (config.get("shape") or "rounded").lower()
+    if shape in ("circle", "triangle", "hexagon"):
+        shape = "rounded"
+    stroke = parse_color_input(config.get("stroke", "#cc0000")) or (0.8, 0, 0)
+    text_color = parse_color_input(config.get("textColor", config.get("stroke", "#cc0000"))) or stroke
+    fill_hex = config.get("fill", "#cc0000")
+    fill_opacity = float(config.get("fillOpacity", 0.12) or 0.12)
+    fill_rgb = parse_color_input(fill_hex) or (1.0, 1.0, 1.0)
+    fill = (
+        fill_rgb[0] * fill_opacity + (1 - fill_opacity),
+        fill_rgb[1] * fill_opacity + (1 - fill_opacity),
+        fill_rgb[2] * fill_opacity + (1 - fill_opacity),
+    )
+    stroke_w = float(config.get("strokeWidth", 2) or 2)
+    dashed = bool(config.get("dashed"))
+    cross = bool(config.get("cross")) or shape == "cross"
+    double_border = bool(config.get("doubleBorder")) or shape == "double"
+    rotation = float(config.get("angle") if config.get("angle") is not None else config.get("defaultRotation", 0))
+
+    target = rect
+    morph = stamp_morph(target, rotation) if rotation else None
+
+    def commit_shape(shape_obj):
+        if morph:
+            shape_obj.commit(morph=morph)
+        else:
+            shape_obj.commit()
+
+    dashes = "[6 3] 0" if dashed else None
+    finish_kw = {"color": stroke, "fill": fill, "width": stroke_w}
+    if dashes:
+        finish_kw["dashes"] = dashes
+
+    if shape == "ellipse":
+        cx = (target.x0 + target.x1) / 2.0
+        cy = (target.y0 + target.y1) / 2.0
+        rx = target.width / 2.0
+        ry = target.height / 2.0
+        shape_obj = page.new_shape()
+        shape_obj.draw_oval(fitz.Rect(cx - rx, cy - ry, cx + rx, cy + ry))
+        shape_obj.finish(**finish_kw)
+        commit_shape(shape_obj)
+    elif shape != "cross":
+        radius = 4 if shape == "rounded" else 0
+        shape_obj = page.new_shape()
+        draw_shape_rect(shape_obj, target, corner_radius=radius)
+        shape_obj.finish(**finish_kw)
+        commit_shape(shape_obj)
+
+    if double_border:
+        inset = max(3.0, min(target.width, target.height) * 0.08)
+        inner = fitz.Rect(
+            target.x0 + inset,
+            target.y0 + inset,
+            target.x1 - inset,
+            target.y1 - inset,
+        )
+        inner_shape = page.new_shape()
+        draw_shape_rect(inner_shape, inner)
+        inner_shape.finish(color=stroke, fill=None, width=max(1.0, stroke_w * 0.6), dashes=dashes)
+        commit_shape(inner_shape)
+
+    if cross:
+        pad = max(6.0, min(target.width, target.height) * 0.12)
+        cross_shape = page.new_shape()
+        cross_shape.draw_line(
+            fitz.Point(target.x0 + pad, target.y0 + pad),
+            fitz.Point(target.x1 - pad, target.y1 - pad),
+        )
+        cross_shape.draw_line(
+            fitz.Point(target.x1 - pad, target.y0 + pad),
+            fitz.Point(target.x0 + pad, target.y1 - pad),
+        )
+        cross_shape.finish(color=stroke, width=stroke_w * 0.9)
+        commit_shape(cross_shape)
+
+    if config.get("checkmark"):
+        check = page.new_shape()
+        check.draw_polyline(stamp_checkmark_points(target))
+        check.finish(
+            color=stroke,
+            width=max(2.2, target.height * 0.075),
+            lineCap=1,
+            lineJoin=1,
+        )
+        commit_shape(check)
+
+    if config.get("checkmark"):
+        text_rect = fitz.Rect(
+            target.x0 + target.width * 0.40,
+            target.y0 + target.height * 0.2,
+            target.x1 - target.width * 0.05,
+            target.y1 - target.height * 0.2,
+        )
+        fontsize = max(9, min(17, target.height * 0.36))
+    else:
+        pad_x = target.width * 0.08
+        pad_y = target.height * 0.18
+        text_rect = fitz.Rect(
+            target.x0 + pad_x,
+            target.y0 + pad_y,
+            target.x1 - pad_x,
+            target.y1 - pad_y,
+        )
+        fontsize = max(9, min(22, target.height * 0.38))
+
+    page.insert_textbox(
+        text_rect,
+        text,
+        fontname="hebo",
+        fontsize=fontsize,
+        color=text_color,
+        align=fitz.TEXT_ALIGN_CENTER,
+    )
+
+    if config.get("strike"):
+        strike_y = (text_rect.y0 + text_rect.y1) / 2.0 + (text_rect.height * 0.08)
+        page.draw_line(
+            fitz.Point(target.x0 + target.width * 0.14, strike_y),
+            fitz.Point(target.x1 - target.width * 0.14, strike_y),
+            color=text_color,
+            width=1.4,
+        )
 
 
 def pdf_font_name(family, bold=False, italic=False):
@@ -1553,61 +1784,28 @@ def parse_color_input(color_str):
     return None
 
 
-SESSION_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions_db.json")
-
-
-def load_session_db():
-    if os.path.exists(SESSION_DB_PATH):
-        try:
-            with open(SESSION_DB_PATH, "r") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
-
-
-def save_session_db(db):
-    try:
-        with open(SESSION_DB_PATH, "w") as f:
-            json.dump(db, f)
-    except Exception:
-        pass
-
-
-def sync_session_db(session_id):
-    entry = sessions.get(session_id)
-    if entry:
-        doc = entry.get("doc")
-        page_count = len(doc) if doc else entry.get("page_count", 0)
-        db = load_session_db()
-        db[session_id] = {
-            "temp_path": entry.get("temp_path"),
-            "page_count": page_count,
-        }
-        save_session_db(db)
+def _session_doc_path(session_id, entry=None):
+    if entry and entry.get("doc_path"):
+        return entry["doc_path"]
+    return store.document_path(session_id)
 
 
 def get_session(session_id):
     if session_id not in sessions:
-        db = load_session_db()
-        if session_id in db:
-            session_info = db[session_id]
-            temp_path = session_info.get("temp_path")
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    doc = fitz.open(temp_path)
-                    sessions[session_id] = {
-                        "doc": doc,
-                        "temp_path": temp_path,
-                        "page_count": session_info.get("page_count", len(doc)),
-                    }
-                    temp_files[session_id] = temp_path
-                except Exception as e:
-                    print(f"Error restoring session {session_id}: {e}", file=sys.stderr, flush=True)
-                    return None
-            else:
-                return None
-        else:
+        if not store.session_exists(session_id):
+            return None
+        path = store.document_path(session_id)
+        try:
+            doc = fitz.open(path)
+            meta = store.read_meta(session_id) or {}
+            sessions[session_id] = {
+                "doc": doc,
+                "doc_path": path,
+                "page_count": len(doc),
+                "password": meta.get("password"),
+            }
+        except Exception as e:
+            print(f"Error restoring session {session_id}: {e}", file=sys.stderr, flush=True)
             return None
 
     entry = sessions[session_id]
@@ -1620,17 +1818,22 @@ def get_session(session_id):
 def save_session_doc(session_id):
     entry = sessions.get(session_id)
     if not entry:
-        return
+        return None
     doc = entry["doc"]
-    if doc and not doc.is_closed:
-        path = entry.get("temp_path")
-        if path:
+    if not doc or doc.is_closed:
+        return None
+    path = _session_doc_path(session_id, entry)
+    entry["doc_path"] = path
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        if os.path.isfile(path):
             doc.saveIncr()
         else:
-            tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-            doc.save(tmp.name)
-            entry["temp_path"] = tmp.name
-    sync_session_db(session_id)
+            doc.save(path)
+    except Exception:
+        doc.save(path)
+    store.write_meta(session_id, {"page_count": len(doc)})
+    return path
 
 
 def page_size_payload(page):
@@ -1669,12 +1872,15 @@ def upload_pdf():
         return jsonify({"error": f"Failed to open PDF: {str(e)}"}), 400
 
     session_id = str(uuid.uuid4())
-    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-    tmp.write(data)
-    tmp.close()
-
     doc.close()
-    doc = fitz.open(tmp.name)
+
+    store.create_session_from_bytes(session_id, data, {
+        "original_filename": file.filename,
+        "password": password,
+        "source": "upload",
+    })
+
+    doc = fitz.open(store.document_path(session_id))
 
     page_sizes = []
     for i in range(len(doc)):
@@ -1683,12 +1889,11 @@ def upload_pdf():
 
     sessions[session_id] = {
         "doc": doc,
-        "temp_path": tmp.name,
+        "doc_path": store.document_path(session_id),
         "page_count": len(doc),
         "password": password,
     }
-    temp_files[session_id] = tmp.name
-    sync_session_db(session_id)
+    store.write_meta(session_id, {"page_count": len(doc)})
 
     return jsonify({
         "session_id": session_id,
@@ -1823,19 +2028,24 @@ def new_pdf():
     doc.new_page(width=w, height=h)
 
     session_id = str(uuid.uuid4())
-    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-    doc.save(tmp.name)
+    store.ensure_data_dirs()
+    os.makedirs(store.session_dir(session_id), exist_ok=True)
+    doc_path = store.document_path(session_id)
+    doc.save(doc_path)
     doc.close()
 
-    doc = fitz.open(tmp.name)
+    doc = fitz.open(doc_path)
 
     sessions[session_id] = {
         "doc": doc,
-        "temp_path": tmp.name,
+        "doc_path": doc_path,
         "page_count": 1,
     }
-    temp_files[session_id] = tmp.name
-    sync_session_db(session_id)
+    store.write_meta(session_id, {
+        "page_count": 1,
+        "source": "new",
+        "page_size": size_name,
+    })
 
     page_sizes = [{"width": w, "height": h}]
     return jsonify({
@@ -2337,11 +2547,17 @@ def save_page(session_id, page_num):
         if rect.is_empty:
             continue
         stamp_key = (elem.get("stampType") or elem.get("stamp") or "approved").lower()
-        stamp_text = elem.get("text") or STAMP_PRESETS.get(stamp_key, stamp_key.title())
+        stamp_text = elem.get("text") or STAMP_PRESETS.get(stamp_key, stamp_key.upper())
+        stamp_config = elem.get("stampConfig")
         try:
-            annot = page.add_stamp_annot(rect, stamp=0)
-            annot.set_info(content=stamp_text)
-            annot.update()
+            if isinstance(stamp_config, dict) and stamp_config:
+                merged = dict(stamp_config)
+                merged.setdefault("text", stamp_text)
+            else:
+                merged = stamp_config_for_key(stamp_key, stamp_text)
+            if "angle" in elem:
+                merged["angle"] = elem["angle"]
+            draw_stamp_from_config(page, rect, merged)
         except Exception:
             try:
                 page.insert_textbox(
@@ -2423,14 +2639,28 @@ def save_page(session_id, page_num):
         except Exception:
             pass
 
-    save_session_doc(session_id)
+    doc_path = save_session_doc(session_id)
+    saved_path = None
+    if doc_path:
+        try:
+            saved_path = store.sync_working_copy_to_saved(session_id)
+        except OSError as err:
+            print(f"Saved copy failed for {session_id}: {err}", file=sys.stderr, flush=True)
+
+    drafts = store.read_drafts(session_id) or {}
+    page_states = drafts.get("pageStates") or {}
+    page_states.pop(str(page_num), None)
+    store.write_drafts(session_id, {**drafts, "pageStates": page_states})
 
     thumbnail = render_page_thumbnail(page)
 
-    return jsonify({
+    payload = {
         "success": True,
         "thumbnail": f"data:image/png;base64,{thumbnail}",
-    })
+    }
+    if saved_path:
+        payload["saved_path"] = saved_path
+    return jsonify(payload)
 
 
 @app.route("/api/export/<session_id>", methods=["POST"])
@@ -2467,12 +2697,24 @@ def export_pdf(session_id):
 
     export_doc = build_export_output_doc(source_doc, options)
     buf = save_export_doc_to_buffer(export_doc, options)
+    pdf_bytes = buf.getvalue()
 
+    meta = store.read_meta(session_id) or {}
+    download_name = meta.get("original_filename") or "edited.pdf"
+    if not download_name.lower().endswith(".pdf"):
+        download_name = f"{download_name}.pdf"
+
+    try:
+        store.save_export_copy(session_id, pdf_bytes, suggested_name=download_name)
+    except OSError as err:
+        print(f"Export archive failed: {err}", file=sys.stderr, flush=True)
+
+    buf.seek(0)
     return send_file(
         buf,
         mimetype="application/pdf",
         as_attachment=True,
-        download_name="edited.pdf",
+        download_name=download_name,
     )
 
 
@@ -2948,13 +3190,39 @@ def get_session_info(session_id):
 
     doc = entry["doc"]
     page_sizes = [page_size_payload(doc[i]) for i in range(len(doc))]
+    meta = store.read_meta(session_id) or {}
     return jsonify({
         "session_id": session_id,
         "page_count": len(doc),
         "page_sizes": page_sizes,
         "metadata": dict(doc.metadata or {}),
         "bookmarks": toc_to_json(doc),
+        "original_filename": meta.get("original_filename"),
+        "storage": {
+            "unsaved_dir": store.session_dir(session_id),
+            "document": store.DOCUMENT_NAME,
+        },
     })
+
+
+@app.route("/api/session/<session_id>/drafts", methods=["GET", "PUT"])
+def session_drafts(session_id):
+    if not store.session_exists(session_id) and session_id not in sessions:
+        return jsonify({"error": "Session not found"}), 404
+
+    if request.method == "GET":
+        drafts = store.read_drafts(session_id)
+        if not drafts:
+            return jsonify({"pageStates": {}, "pageFormStates": {}, "currentPage": 0})
+        return jsonify(drafts)
+
+    body = request.get_json(silent=True) or {}
+    store.write_drafts(session_id, {
+        "pageStates": body.get("pageStates") or {},
+        "pageFormStates": body.get("pageFormStates") or {},
+        "currentPage": body.get("currentPage", 0),
+    })
+    return jsonify({"success": True})
 
 
 @app.route("/api/session/<session_id>", methods=["DELETE"])
@@ -2964,18 +3232,7 @@ def cleanup_session(session_id):
         doc = entry.get("doc")
         if doc and not doc.is_closed:
             doc.close()
-        temp_path = temp_files.pop(session_id, None)
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.unlink(temp_path)
-            except OSError:
-                pass
-    try:
-        db = load_session_db()
-        db.pop(session_id, None)
-        save_session_db(db)
-    except Exception:
-        pass
+    store.delete_session_workspace(session_id)
     return jsonify({"success": True})
 
 

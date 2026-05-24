@@ -358,6 +358,26 @@ const API = {
         return resp.json();
     },
 
+    async getDrafts(sessionId) {
+        const resp = await fetch(`${this.baseUrl}/session/${sessionId}/drafts`);
+        if (!resp.ok) {
+            return null;
+        }
+        return resp.json();
+    },
+
+    async saveDrafts(sessionId, payload) {
+        const resp = await fetch(`${this.baseUrl}/session/${sessionId}/drafts`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!resp.ok) {
+            throw new Error('Failed to save drafts');
+        }
+        return resp.json();
+    },
+
     async deleteSession(sessionId) {
         const resp = await fetch(`${this.baseUrl}/session/${sessionId}`, {
             method: 'DELETE',

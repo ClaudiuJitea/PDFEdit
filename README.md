@@ -30,7 +30,7 @@
 *   **Zero-Install Uploads:** Drag-and-drop PDFs (up to 50MB) directly into the upload area or editor overlay. Fast, secure processing.
 *   **Encrypted PDFs:** Full AES-256 password decryption support with secure browser-side password prompt modal.
 *   **Dynamic New Documents:** Create clean blank PDFs from scratch with standard presets (`A4`, `Letter`, `Legal`, `A3`, `A5`) or custom point dimensions.
-*   **Intelligent Local Sync:** Keep work safe with server-side page state commits, automatic thumbnail rendering, and session connection restore from `localStorage` drafts after browser reloads.
+*   **Session storage on disk:** Open documents live under `data/unsaved/<session_id>/` (`document.pdf`, `meta.json`, `drafts.json`). Exports are archived to `data/saved/`. The browser keeps a lightweight `localStorage` fallback for session restore.
 *   **Loss-Free Export:** Download fully assembled PDFs with robust layout integrity, form flattening options, page splits, and multi-level encryption passwords.
 
 ### Precise Annotations & Visual Edits

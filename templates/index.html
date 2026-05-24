@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Great+Vibes&family=Alex+Brush&family=Satisfy&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=1.0.8">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=1.0.9">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
@@ -60,6 +60,10 @@
                     <button id="btn-document" class="top-btn" title="Document metadata & bookmarks" disabled>
                         <i data-lucide="book-open" class="btn-icon"></i>
                         <span>Document</span>
+                    </button>
+                    <button id="btn-close" class="top-btn" title="Close document (Ctrl+W)" disabled>
+                        <i data-lucide="file-x" class="btn-icon"></i>
+                        <span>Close</span>
                     </button>
                     <span class="top-bar-sep"></span>
                     <button id="btn-undo" class="top-btn icon-only" title="Undo (Ctrl+Z)" disabled>
@@ -820,18 +824,29 @@
                     </div>
                 </div>
 
-                <div id="props-stamp" class="props-section" style="display:none">
+                <div id="props-stamp" class="props-section props-stamp-panel" style="display:none">
                     <h3 class="props-title">Stamp</h3>
-                    <div class="prop-group">
-                        <label class="prop-label">Preset</label>
-                        <select id="prop-stamp-type" class="prop-select">
-                            <option value="approved">Approved</option>
-                            <option value="draft">Draft</option>
-                            <option value="confidential">Confidential</option>
-                            <option value="void">VOID</option>
-                        </select>
+                    <input type="hidden" id="prop-stamp-type" value="approved">
+                    <div class="prop-group stamp-presets-group">
+                        <label class="prop-label">Presets</label>
+                        <div id="stamp-preset-grid" class="stamp-preset-grid" role="radiogroup" aria-label="Stamp presets"></div>
                     </div>
-                    <p class="form-summary-selected">Click on the page to place the stamp.</p>
+                    <div class="prop-group">
+                        <label class="prop-label" for="prop-stamp-text">Label</label>
+                        <input type="text" id="prop-stamp-text" class="prop-input stamp-label-input" maxlength="48" placeholder="STAMP" autocomplete="off" spellcheck="false">
+                    </div>
+                    <div class="prop-group">
+                        <label class="stamp-color-field" for="prop-stamp-accent">
+                            <span class="stamp-color-preview" id="prop-stamp-accent-preview" style="background:#15803d"></span>
+                            <span class="stamp-color-copy">
+                                <span class="stamp-color-copy-title">Ink color</span>
+                                <code id="prop-stamp-accent-hex">#15803D</code>
+                            </span>
+                            <input type="color" id="prop-stamp-accent" class="stamp-color-native" value="#15803d" title="Choose stamp color">
+                        </label>
+                    </div>
+                    <p id="stamp-edit-hint" class="stamp-hint" style="display:none">Drag handles on the canvas to resize or rotate.</p>
+                    <p id="stamp-place-hint" class="stamp-hint">Click on the page to place your stamp.</p>
                 </div>
 
                 <div id="props-link" class="props-section" style="display:none">
@@ -1283,11 +1298,12 @@
         });
     })();
     </script>
-    <script src="{{ url_for('static', filename='api.js') }}?v=1.0.8"></script>
-    <script src="{{ url_for('static', filename='editor.js') }}?v=1.0.8"></script>
-    <script src="{{ url_for('static', filename='forms.js') }}?v=1.0.4"></script>
-    <script src="{{ url_for('static', filename='toolbar.js') }}?v=1.0.8"></script>
-    <script src="{{ url_for('static', filename='signature.js') }}?v=1.0.4"></script>
-    <script src="{{ url_for('static', filename='app.js') }}?v=1.0.8"></script>
+    <script src="{{ url_for('static', filename='api.js') }}?v=1.0.9"></script>
+    <script src="{{ url_for('static', filename='stamps.js') }}?v=2.0.2"></script>
+    <script src="{{ url_for('static', filename='editor.js') }}?v=1.0.16"></script>
+    <script src="{{ url_for('static', filename='forms.js') }}?v=1.0.5"></script>
+    <script src="{{ url_for('static', filename='toolbar.js') }}?v=1.0.9"></script>
+    <script src="{{ url_for('static', filename='signature.js') }}?v=1.0.5"></script>
+    <script src="{{ url_for('static', filename='app.js') }}?v=1.0.10"></script>
 </body>
 </html>

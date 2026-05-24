@@ -1384,6 +1384,204 @@ select {
     border-color: var(--color-primary);
 }
 
+.props-stamp-panel .prop-group {
+    margin-bottom: 14px;
+}
+
+.stamp-presets-group .prop-label {
+    margin-bottom: 8px;
+}
+
+.stamp-preset-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    max-height: 220px;
+    overflow-y: auto;
+    padding: 8px;
+    margin-bottom: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--color-surface-offset) 55%, var(--color-surface-2));
+}
+
+.stamp-label-input {
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.stamp-color-field {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-2);
+    cursor: pointer;
+    transition:
+        border-color 0.15s ease,
+        box-shadow 0.15s ease,
+        background 0.15s ease;
+}
+
+.stamp-color-field:hover {
+    border-color: color-mix(in srgb, var(--color-primary) 45%, var(--color-border));
+    background: color-mix(in srgb, var(--color-primary) 4%, var(--color-surface-2));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 14%, transparent);
+}
+
+.stamp-color-field:focus-within {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent);
+}
+
+.stamp-color-preview {
+    width: 38px;
+    height: 38px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--stamp-accent-color, #15803d);
+    box-shadow:
+        inset 0 0 0 1px oklch(0 0 0 / 0.14),
+        0 2px 8px oklch(0 0 0 / 0.12);
+}
+
+.stamp-color-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+    flex: 1;
+}
+
+.stamp-color-copy-title {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--color-text-faint);
+    line-height: 1;
+}
+
+.stamp-color-copy code {
+    font-size: 13px;
+    font-weight: 600;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    color: var(--color-text);
+    letter-spacing: 0.04em;
+    line-height: 1.2;
+}
+
+.stamp-color-native {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    width: 38px;
+    height: 38px;
+    margin: 0;
+    padding: 0;
+    border: none;
+    transform: translateY(-50%);
+    opacity: 0;
+    cursor: pointer;
+}
+
+.stamp-hint {
+    margin: 4px 0 0;
+    padding: 9px 11px;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--color-text-muted);
+    background: color-mix(in srgb, var(--color-primary) 7%, var(--color-surface-2));
+    border: 1px solid color-mix(in srgb, var(--color-primary) 18%, var(--color-border));
+    border-radius: var(--radius-sm);
+    border-left-width: 3px;
+    border-left-color: var(--color-primary);
+}
+
+.prop-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--color-text-muted);
+    cursor: pointer;
+}
+
+.prop-checkbox input {
+    accent-color: var(--color-primary);
+}
+
+.stamp-preset-btn {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    min-height: 44px;
+    padding: 6px 10px;
+    border: 2px solid transparent;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font: inherit;
+    transition:
+        border-color 0.15s ease,
+        box-shadow 0.15s ease,
+        transform 0.15s ease,
+        background 0.15s ease;
+}
+
+.stamp-preset-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px oklch(0 0 0 / 0.08);
+}
+
+.stamp-preset-btn:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+}
+
+.stamp-preset-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    line-height: 1.15;
+    text-align: center;
+    pointer-events: none;
+}
+
+.stamp-preset-btn-checkmark {
+    width: 15px;
+    height: 15px;
+    flex-shrink: 0;
+    pointer-events: none;
+}
+
+.stamp-preset-btn.active {
+    border-color: var(--color-primary);
+    box-shadow:
+        0 0 0 2px color-mix(in srgb, var(--color-primary) 22%, transparent),
+        0 2px 8px oklch(0 0 0 / 0.08);
+}
+
+[data-theme="dark"] .stamp-preset-grid {
+    background: color-mix(in srgb, var(--color-surface-offset) 40%, black);
+}
+
+[data-theme="dark"] .stamp-color-field {
+    background: color-mix(in srgb, var(--color-surface-2) 92%, black);
+}
+
+[data-theme="dark"] .stamp-color-preview {
+    box-shadow:
+        inset 0 0 0 1px oklch(1 0 0 / 0.12),
+        0 2px 10px oklch(0 0 0 / 0.35);
+}
+
 .prop-row {
     display: flex;
     gap: 8px;

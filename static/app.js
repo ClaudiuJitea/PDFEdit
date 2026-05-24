@@ -33,6 +33,7 @@ class App {
         this.linkPreset = 'web';
         this._linkDrawAreaMode = false;
         this.isDirty = false;
+        this.dirtyPages = new Set();
         this._draftPersistTimer = null;
         this._SESSION_STORAGE_KEY = 'pdfedit-session';
     }
@@ -67,6 +68,14 @@ class App {
     _attachEditorCallbacks() {
         this.editor.onObjectSelected = (objects) => {
             this._clearFormSelection(false);
+            if (
+                objects?.length === 1
+                && objects[0]._elementType === 'stamp'
+                && this.toolbar.activeTool === 'stamp'
+            ) {
+                this._onToolChange('select');
+                this.editor.canvas.setActiveObject(objects[0]);
+            }
             if (this.toolbar.activeTool === 'link') {
                 this.toolbar.showLinkProperties();
                 this._updateLinkSelectedTextButton();
@@ -96,6 +105,13 @@ class App {
         this.editor.onCanvasModified = () => {
             this._recordUndoState();
             this._markDirty();
+            const active = this.editor.getActiveObject();
+            if (active?._elementType === 'stamp') {
+                this.toolbar.syncStampPropsFromObject(active);
+            }
+        };
+        this.editor.onDrawingComplete = (createdObject) => {
+            this._selectToolAfterDraw(createdObject);
         };
         this.editor.onLinkAreaDrawn = (area) => this._onLinkAreaDrawn(area);
         this.editor.onLinkOverlayClicked = (link) => this._selectLinkEntry(link);
@@ -167,6 +183,7 @@ class App {
             stickyPopupTextarea: document.getElementById('sticky-popup-textarea'),
             btnMerge: document.getElementById('btn-merge'),
             btnDocument: document.getElementById('btn-document'),
+            btnClose: document.getElementById('btn-close'),
             mergeFileInput: document.getElementById('merge-file-input'),
             findInput: document.getElementById('find-input'),
             btnFindPrev: document.getElementById('btn-find-prev'),
@@ -242,6 +259,9 @@ class App {
         if (this.els.btnDocument) {
             this.els.btnDocument.addEventListener('click', () => this._toggleDocumentPanel());
         }
+        if (this.els.btnClose) {
+            this.els.btnClose.addEventListener('click', () => this._closeDocument());
+        }
         if (this.els.btnCancelExport) {
             this.els.btnCancelExport.addEventListener('click', () => this._hideExportModal());
             this.els.exportModal.querySelector('.modal-backdrop')?.addEventListener('click', () => this._hideExportModal());
@@ -265,11 +285,9 @@ class App {
             this.els.btnFindNext?.addEventListener('click', () => this._runSearch(false));
             this.els.btnFindPrev?.addEventListener('click', () => this._runSearch(true));
         }
-        if (this.els.propStampType) {
-            this.els.propStampType.addEventListener('change', () => {
-                this.editor.setStampType(this.els.propStampType.value);
-            });
-        }
+        this._initStampPresetGrid();
+        this._bindStampPresetButtons();
+        this._bindStampDesignControls();
         if (this.els.propLinkKind) {
             this.els.propLinkKind.addEventListener('change', () => {
                 this._updateLinkPropVisibility();
@@ -430,7 +448,7 @@ class App {
                 e.returnValue = '';
             }
         });
-        window.addEventListener('pagehide', () => this._persistDraft());
+        window.addEventListener('pagehide', () => { void this._persistDraft(); });
     }
 
     _initShapeDropdown() {
@@ -504,6 +522,12 @@ class App {
                     case 'o':
                         e.preventDefault();
                         this._openFilePicker();
+                        return;
+                    case 'w':
+                        if (this.sessionId) {
+                            e.preventDefault();
+                            this._closeDocument();
+                        }
                         return;
                 }
             }
@@ -720,8 +744,89 @@ class App {
 
     _markDirty() {
         this.isDirty = true;
+        this.dirtyPages.add(this.currentPage);
         this._scheduleDraftPersist();
         this._updateSaveUnsavedIndicator();
+    }
+
+    _initStampPresetGrid() {
+        const grid = document.getElementById('stamp-preset-grid');
+        if (!grid || !window.StampKit) return;
+
+        grid.innerHTML = '';
+        StampKit.listPresets().forEach((key) => {
+            const cfg = StampKit.getPreset(key);
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = `stamp-preset-btn stamp-preset-${key}`;
+            btn.dataset.stampType = key;
+            btn.title = cfg.text;
+            btn.style.color = cfg.textColor;
+            btn.style.borderColor = cfg.stroke;
+            btn.style.background = StampKit.fillCss(cfg);
+            if (cfg.dashed) btn.style.borderStyle = 'dashed';
+
+            if (cfg.checkmark) {
+                const check = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                check.setAttribute('class', 'stamp-preset-btn-checkmark');
+                check.setAttribute('viewBox', '0 0 24 24');
+                check.setAttribute('fill', 'none');
+                check.setAttribute('stroke', 'currentColor');
+                check.setAttribute('stroke-width', '3.5');
+                check.setAttribute('stroke-linecap', 'round');
+                check.setAttribute('stroke-linejoin', 'round');
+                
+                const poly = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                poly.setAttribute('d', 'M5.5 12.5 L9.5 16.5 L18 7');
+                check.appendChild(poly);
+                
+                btn.appendChild(check);
+            }
+
+            const label = document.createElement('span');
+            label.className = 'stamp-preset-label';
+            const short = cfg.text.length > 16 ? `${cfg.text.slice(0, 14)}…` : cfg.text;
+            label.textContent = short;
+            btn.appendChild(label);
+            grid.appendChild(btn);
+        });
+    }
+
+    _bindStampPresetButtons() {
+        document.querySelectorAll('.stamp-preset-btn').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const type = btn.dataset.stampType;
+                if (type && this.toolbar.onPropertyChange) {
+                    this.toolbar.onPropertyChange('stamp', 'stampType', type);
+                }
+            });
+        });
+    }
+
+    _bindStampDesignControls() {
+        const applyPlacement = () => {
+            if (this.editor.getActiveObject()?._elementType === 'stamp') return;
+            const patch = this._readStampConfigFromPanel();
+            this.editor.setStampConfig(patch);
+        };
+
+        ['prop-stamp-text', 'prop-stamp-accent'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            const evt = el.type === 'color' ? 'change' : 'input';
+            el.addEventListener(evt, applyPlacement);
+        });
+    }
+
+    _readStampConfigFromPanel() {
+        const base = StampKit.cloneConfig(this.editor.stampConfig);
+        const textEl = document.getElementById('prop-stamp-text');
+        const accentEl = document.getElementById('prop-stamp-accent');
+        if (textEl) base.text = textEl.value;
+        if (accentEl) {
+            return StampKit.applyAccentColor(base, accentEl.value);
+        }
+        return base;
     }
 
     _updateSaveUnsavedIndicator() {
@@ -754,25 +859,19 @@ class App {
 
     _hasUnsavedChanges() {
         if (!this.sessionId) return false;
-        if (this.isDirty) return true;
-        return Object.keys(this.pageStates).some((key) => {
-            const state = this.pageStates[key];
-            return state?.objects?.length > 0;
-        });
+        return this.dirtyPages.size > 0;
     }
 
     _getDirtyPageNumbers() {
-        const pages = new Set();
-        if (this.isDirty) {
-            pages.add(this.currentPage);
-        }
-        for (const key of Object.keys(this.pageStates)) {
-            const state = this.pageStates[key];
-            if (state?.objects?.length > 0) {
-                pages.add(parseInt(key, 10));
-            }
-        }
-        return [...pages].sort((a, b) => a - b);
+        return [...this.dirtyPages].sort((a, b) => a - b);
+    }
+
+    _reindexDirtyPages(remapFn) {
+        this.dirtyPages = new Set(
+            [...this.dirtyPages]
+                .map((page) => remapFn(page))
+                .filter((page) => Number.isInteger(page) && page >= 0 && page < this.pageCount)
+        );
     }
 
     _promptUnsavedChanges(options = {}) {
@@ -872,31 +971,47 @@ class App {
         }
     }
 
-    _persistDraft() {
+    async _persistDraft() {
         if (!this.sessionId) return;
-        if (this.editor.canvas) {
+        if (this.editor.canvas && this.isDirty) {
             this.pageStates[this.currentPage] = this.editor.toJSON();
             this._syncCurrentPageFormsState();
         }
+        const payload = {
+            pageStates: this.pageStates,
+            pageFormStates: this.pageFormStates,
+            currentPage: this.currentPage,
+            updatedAt: Date.now(),
+        };
         try {
-            localStorage.setItem(this._draftStorageKey(this.sessionId), JSON.stringify({
-                pageStates: this.pageStates,
-                pageFormStates: this.pageFormStates,
-                currentPage: this.currentPage,
-                updatedAt: Date.now(),
-            }));
+            await API.saveDrafts(this.sessionId, payload);
+        } catch (err) {
+            console.warn('Failed to persist draft on server:', err);
+        }
+        try {
+            localStorage.setItem(this._draftStorageKey(this.sessionId), JSON.stringify(payload));
             this._persistSessionMeta();
         } catch (err) {
-            console.warn('Failed to persist draft:', err);
+            console.warn('Failed to persist draft locally:', err);
         }
     }
 
     _scheduleDraftPersist() {
         clearTimeout(this._draftPersistTimer);
-        this._draftPersistTimer = setTimeout(() => this._persistDraft(), 500);
+        this._draftPersistTimer = setTimeout(() => {
+            void this._persistDraft();
+        }, 500);
     }
 
-    _loadDraft(sessionId) {
+    async _loadDraft(sessionId) {
+        try {
+            const serverDraft = await API.getDrafts(sessionId);
+            if (serverDraft?.pageStates && Object.keys(serverDraft.pageStates).length) {
+                return serverDraft;
+            }
+        } catch {
+            /* fall back to localStorage */
+        }
         try {
             const raw = localStorage.getItem(this._draftStorageKey(sessionId));
             if (!raw) return null;
@@ -928,7 +1043,7 @@ class App {
 
         try {
             const data = await API.getSession(stored.sessionId);
-            const draft = this._loadDraft(stored.sessionId);
+            const draft = await this._loadDraft(stored.sessionId);
 
             this._initSession(data, {
                 deleteOldSession: false,
@@ -939,6 +1054,9 @@ class App {
             if (draft) {
                 this.pageStates = draft.pageStates || {};
                 this.pageFormStates = draft.pageFormStates || {};
+                this.dirtyPages = new Set(
+                    Object.keys(this.pageStates).map((key) => parseInt(key, 10))
+                );
             }
 
             const page = Math.min(
@@ -1023,6 +1141,93 @@ class App {
         this.els.newPdfModal.style.display = 'none';
     }
 
+    async _closeDocument() {
+        if (!this.sessionId) return;
+
+        if (!(await this._proceedPastUnsaved({
+            message: 'You have unsaved changes. Save them before closing?',
+        }))) {
+            return;
+        }
+
+        const sessionId = this.sessionId;
+        this._unloadDocument(sessionId);
+        this._showToast('Document closed', 'success');
+    }
+
+    _unloadDocument(sessionId) {
+        clearTimeout(this._draftPersistTimer);
+
+        if (this.editor.canvas) {
+            this.editor.dispose();
+        }
+        const oldWrapper = this.els.canvasWrapper.querySelector('.canvas-container');
+        if (oldWrapper) oldWrapper.remove();
+        const oldCanvas = this.els.canvasWrapper.querySelector('#fabric-canvas');
+        if (oldCanvas) oldCanvas.remove();
+
+        this._clearSessionStorage(sessionId);
+        API.deleteSession(sessionId).catch(() => {});
+
+        this.sessionId = null;
+        this.pageCount = 0;
+        this.currentPage = 0;
+        this.pageSizes = [];
+        this.undoStack = [];
+        this.undoIndex = -1;
+        this.pageStates = {};
+        this.pageFormStates = {};
+        this.thumbnails = {};
+        this.selectedFormXref = null;
+        this.isDirty = false;
+        this.dirtyPages = new Set();
+        this.isLoading = false;
+        this.isSaving = false;
+        this.documentMode = false;
+        this.searchResults = [];
+        this.searchIndex = 0;
+        this.pageLinks = [];
+        this.documentLinks = [];
+        this.selectedLink = null;
+        this._detectedTables = [];
+        this.pendingPageLoad = null;
+
+        this.formLayer.clear();
+        this._hideStickyPopup();
+        this._hideCanvasContextMenu();
+        this._hideExportModal();
+        this._hidePasswordModal();
+
+        if (this.els.thumbnailsList) {
+            this.els.thumbnailsList.innerHTML = '';
+        }
+        if (this.els.findInput) {
+            this.els.findInput.value = '';
+            this.els.findInput.disabled = true;
+            this.els.btnFindPrev.disabled = true;
+            this.els.btnFindNext.disabled = true;
+            if (this.els.findStatus) this.els.findStatus.textContent = '';
+        }
+
+        this.els.uploadZone.style.display = '';
+        this.els.editorContainer.style.display = 'none';
+        this.els.canvasLoading.style.display = 'none';
+        this.els.canvasError.style.display = 'none';
+        this.els.pageCountBadge.style.display = 'none';
+
+        this.els.btnSave.disabled = true;
+        this.els.btnDownload.disabled = true;
+        if (this.els.btnMerge) this.els.btnMerge.disabled = true;
+        if (this.els.btnDocument) this.els.btnDocument.disabled = true;
+        if (this.els.btnClose) this.els.btnClose.disabled = true;
+        this.els.btnUndo.disabled = true;
+        this.els.btnRedo.disabled = true;
+
+        this._updateSaveUnsavedIndicator();
+        this.toolbar.setActiveTool('select');
+        this._showContextProperties();
+    }
+
     async _createNewPdf() {
         if (!(await this._proceedPastUnsaved({
             message: 'You have unsaved changes. Save them before creating a new document?',
@@ -1071,6 +1276,7 @@ class App {
         if (clearDraft) {
             this.pageStates = {};
             this.pageFormStates = {};
+            this.dirtyPages = new Set();
         }
         this.thumbnails = {};
         this.selectedFormXref = null;
@@ -1084,6 +1290,7 @@ class App {
         this.els.btnDownload.disabled = false;
         if (this.els.btnMerge) this.els.btnMerge.disabled = false;
         if (this.els.btnDocument) this.els.btnDocument.disabled = false;
+        if (this.els.btnClose) this.els.btnClose.disabled = false;
         if (this.els.findInput) {
             this.els.findInput.disabled = false;
             this.els.btnFindPrev.disabled = false;
@@ -1241,8 +1448,13 @@ class App {
         if (this.isSaving) return;
 
         const previousPage = this.currentPage;
-        this.pageStates[previousPage] = this.editor.toJSON();
-        this._syncCurrentPageFormsState();
+        if (this.isDirty) {
+            this.pageStates[previousPage] = this.editor.toJSON();
+            this._syncCurrentPageFormsState();
+            this.dirtyPages.add(previousPage);
+        } else {
+            delete this.pageStates[previousPage];
+        }
         this._persistDraft();
         this._updateSaveUnsavedIndicator();
 
@@ -1422,10 +1634,14 @@ class App {
 
             this.editor.clearDeletedOriginals();
             delete this.pageStates[this.currentPage];
+            this.dirtyPages.delete(this.currentPage);
             this.isDirty = false;
-            this._persistDraft();
+            void this._persistDraft();
             if (!silent) {
-                this._showToast('Page saved', 'success');
+                this._showToast(
+                    result.saved_path ? 'Page saved to data/saved' : 'Page saved',
+                    'success',
+                );
             }
             return true;
         } catch (err) {
@@ -1575,6 +1791,38 @@ class App {
         this.els.btnRedo.disabled = !canRedo;
     }
 
+    _selectToolAfterDraw(createdObject) {
+        const placementTools = new Set([
+            'stamp', 'rect', 'ellipse', 'line', 'star',
+            'highlight', 'redaction', 'sticky', 'freehand',
+        ]);
+        if (!placementTools.has(this.toolbar.activeTool) && !placementTools.has(this.editor.currentTool)) {
+            return;
+        }
+
+        this.toolbar.setActiveTool('select');
+        this.editor.activateSelectTool();
+
+        const shapeBtn = document.getElementById('btn-shape-main');
+        const shapeMenu = document.getElementById('shape-dropdown-menu');
+        if (shapeBtn && shapeMenu) {
+            shapeMenu.querySelectorAll('.menu-item').forEach((item) => {
+                item.classList.toggle('active', item.dataset.shape === 'rect');
+            });
+            shapeBtn.dataset.tool = 'rect';
+        }
+
+        if (createdObject && this.editor.canvas) {
+            this.editor.canvas.setActiveObject(createdObject);
+            createdObject.setCoords();
+            this.editor.canvas.requestRenderAll();
+            this.toolbar.showPropertiesForObjects([createdObject]);
+            return;
+        }
+
+        this._showContextProperties();
+    }
+
     _onToolChange(tool) {
         this.documentMode = false;
 
@@ -1588,7 +1836,9 @@ class App {
             this.editor.setTool('stamp');
             this.editor.setStampType(this.els.propStampType?.value || 'approved');
             this.formLayer.setInteractive(false);
-            this.toolbar.showStampProperties();
+            this.toolbar.showStampProperties('place');
+            const cfg = this.editor.stampConfig || StampKit.getPreset('approved');
+            this.toolbar.syncStampConfigForPlacement(cfg);
             return;
         }
 
@@ -1635,7 +1885,11 @@ class App {
         }
 
         this.toolbar.setActiveTool(tool);
-        this.editor.setTool(tool);
+        if (tool === 'select') {
+            this.editor.activateSelectTool();
+        } else {
+            this.editor.setTool(tool);
+        }
         this.formLayer.setInteractive(false);
         this._showContextProperties();
 
@@ -1675,7 +1929,12 @@ class App {
         }
 
         if (this.toolbar.activeTool === 'stamp') {
-            this.toolbar.showStampProperties();
+            const active = this.editor.getActiveObject();
+            if (active?._elementType === 'stamp') {
+                this.toolbar._showStampProps(active);
+            } else {
+                this.toolbar.showStampProperties('place');
+            }
             return;
         }
 
@@ -1805,6 +2064,27 @@ class App {
             return;
         }
 
+        if (type === 'stamp' && prop === 'stampType') {
+            const active = this.editor.getActiveObject();
+            const preset = StampKit.getPreset(value);
+            if (this.els.propStampType) this.els.propStampType.value = value;
+            this.toolbar._syncStampPresetButtons(value);
+
+            if (active?._elementType === 'stamp') {
+                const cfg = this.getStampConfigFromPanelForRebuild(active, preset);
+                const updated = this.editor.rebuildStamp(active, cfg);
+                if (updated) {
+                    this.toolbar.syncStampPropsFromObject(updated);
+                    this._markDirty();
+                }
+                return;
+            }
+
+            this.editor.setStampConfig(preset);
+            this.toolbar.syncStampConfigForPlacement(preset);
+            return;
+        }
+
         const obj = this.editor.getActiveObject();
         if (!obj) return;
 
@@ -1837,6 +2117,9 @@ class App {
                 break;
             case 'sticky':
                 this._applyStickyProp(obj, prop, value);
+                break;
+            case 'stamp':
+                this._applyStampProp(obj, prop, value);
                 break;
         }
 
@@ -2013,6 +2296,39 @@ class App {
             case 'sendBack':
                 this.editor.sendToBack(obj);
                 return;
+        }
+    }
+
+    getStampConfigFromPanelForRebuild(obj, presetOverride = null) {
+        const base = presetOverride
+            ? StampKit.cloneConfig(presetOverride)
+            : StampKit.cloneConfig(obj.stampConfig || this.editor.getStampConfigFromGroup(obj));
+        const textEl = document.getElementById('prop-stamp-text');
+        const accentEl = document.getElementById('prop-stamp-accent');
+        if (textEl) base.text = textEl.value;
+        if (accentEl) {
+            return StampKit.applyAccentColor(base, accentEl.value);
+        }
+        return base;
+    }
+
+    _applyStampProp(obj, prop, value) {
+        if (!obj || obj._elementType !== 'stamp') return;
+
+        let patch;
+        if (prop === 'accentColor') {
+            patch = StampKit.applyAccentColor(this.editor.getStampConfigFromGroup(obj), value);
+            patch.preset = obj.stampConfig?.preset || 'custom';
+        } else if (prop === 'text') {
+            patch = { text: value, preset: obj.stampConfig?.preset || 'custom' };
+        } else {
+            return;
+        }
+
+        const updated = this.editor.rebuildStamp(obj, patch);
+        if (updated) {
+            this.toolbar.syncStampPropsFromObject(updated);
+            this._markDirty();
         }
     }
 
@@ -2305,6 +2621,12 @@ class App {
             this.pageStates = this._moveIndexedObject(this.pageStates, from, to, this.pageCount);
             this.pageFormStates = this._moveIndexedObject(this.pageFormStates, from, to, this.pageCount);
             this.thumbnails = this._moveIndexedObject(this.thumbnails, from, to, this.pageCount);
+            this._reindexDirtyPages((index) => {
+                if (index === from) return to;
+                if (from < index && index <= to) return index - 1;
+                if (to <= index && index < from) return index + 1;
+                return index;
+            });
 
             if (this.currentPage === from) {
                 this.currentPage = to;
@@ -2371,6 +2693,7 @@ class App {
             this.pageStates = this._reindexIndexedObject(this.pageStates, (index) => index >= insertAt ? index + 1 : index);
             this.pageFormStates = this._reindexIndexedObject(this.pageFormStates, (index) => index >= insertAt ? index + 1 : index);
             this.thumbnails = this._reindexIndexedObject(this.thumbnails, (index) => index >= insertAt ? index + 1 : index);
+            this._reindexDirtyPages((index) => (index >= insertAt ? index + 1 : index));
 
             this._updatePageInfo();
             if (this.thumbnailsVisible) {
@@ -2423,6 +2746,10 @@ class App {
                 if (index === pageNum) return null;
                 return index > pageNum ? index - 1 : index;
             });
+            this._reindexDirtyPages((index) => {
+                if (index === pageNum) return null;
+                return index > pageNum ? index - 1 : index;
+            });
 
             if (pageNum === this.currentPage) {
                 this.currentPage = Math.min(pageNum, this.pageCount - 1);
@@ -2456,6 +2783,7 @@ class App {
             this.pageStates = this._reindexIndexedObject(this.pageStates, (index) => index >= insertAt ? index + 1 : index);
             this.pageFormStates = this._reindexIndexedObject(this.pageFormStates, (index) => index >= insertAt ? index + 1 : index);
             this.thumbnails = this._reindexIndexedObject(this.thumbnails, (index) => index >= insertAt ? index + 1 : index);
+            this._reindexDirtyPages((index) => (index >= insertAt ? index + 1 : index));
 
             if (result.thumbnail) {
                 this.thumbnails[insertAt] = result.thumbnail;

@@ -119,6 +119,16 @@ class Toolbar {
             el.addEventListener(evt, () => this._onStickyPropChange(id));
         });
 
+        ['prop-stamp-text', 'prop-stamp-accent'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            const evt = el.type === 'color' ? 'change' : 'input';
+            el.addEventListener(evt, () => this._onStampPropChange(id));
+            if (el.type !== 'color') {
+                el.addEventListener('input', () => this._onStampPropChange(id));
+            }
+        });
+
         document.querySelectorAll('.sticky-color-btn').forEach((btn) => {
             btn.addEventListener('click', () => {
                 const color = btn.dataset.stickyColor;
@@ -399,6 +409,21 @@ class Toolbar {
         }
     }
 
+    _onStampPropChange(id) {
+        if (!this.onPropertyChange || this._syncingStampProps) return;
+        const el = document.getElementById(id);
+        if (!el) return;
+
+        switch (id) {
+            case 'prop-stamp-text':
+                this.onPropertyChange('stamp', 'text', el.value);
+                break;
+            case 'prop-stamp-accent':
+                this.onPropertyChange('stamp', 'accentColor', el.value);
+                break;
+        }
+    }
+
     _onImagePropChange(id) {
         if (!this.onPropertyChange) return;
         const el = document.getElementById(id);
@@ -488,6 +513,8 @@ class Toolbar {
             this._showShapeProps(obj);
         } else if (obj.type === 'path') {
             this._showShapeProps(obj);
+        } else if (obj._elementType === 'stamp' || (obj.type === 'group' && obj.stampType)) {
+            this._showStampProps(obj);
         } else {
             document.getElementById('props-empty').style.display = 'flex';
         }
@@ -589,10 +616,83 @@ class Toolbar {
         if (sigProps) sigProps.style.display = 'none';
     }
 
-    showStampProperties() {
+    showStampProperties(mode = 'place') {
         this._hideAllProps();
         const panel = document.getElementById('props-stamp');
-        if (panel) panel.style.display = 'block';
+        if (!panel) return;
+        panel.style.display = 'block';
+        const placeHint = document.getElementById('stamp-place-hint');
+        const editHint = document.getElementById('stamp-edit-hint');
+        if (placeHint) placeHint.style.display = mode === 'place' ? 'block' : 'none';
+        if (editHint) editHint.style.display = mode === 'edit' ? 'block' : 'none';
+    }
+
+    _showStampProps(obj) {
+        this.showStampProperties('edit');
+        this.syncStampPropsFromObject(obj);
+    }
+
+    syncStampPropsFromObject(obj) {
+        if (!obj || obj._elementType !== 'stamp') return;
+
+        const cfg = obj.stampConfig || (window.StampKit ? StampKit.getPreset(obj.stampType || 'approved') : null);
+        if (!cfg) return;
+
+        this._syncingStampProps = true;
+
+        const presetKey = cfg.preset && StampKit?.listPresets().includes(cfg.preset) ? cfg.preset : '';
+        const hidden = document.getElementById('prop-stamp-type');
+        if (hidden) hidden.value = presetKey || 'custom';
+        this._syncStampPresetButtons(presetKey);
+
+        const textEl = document.getElementById('prop-stamp-text');
+        if (textEl) textEl.value = cfg.text || '';
+
+        this._setColorInput('prop-stamp-accent', cfg.stroke || cfg.fill);
+
+        this._syncingStampProps = false;
+    }
+
+    _setColorInput(id, hex) {
+        const el = document.getElementById(id);
+        if (!el || !hex) return;
+        if (hex.startsWith('#') && hex.length >= 7) {
+            el.value = hex.slice(0, 7);
+        }
+        if (id === 'prop-stamp-accent') {
+            this._syncStampAccentHex(hex);
+        }
+    }
+
+    _syncStampAccentHex(hex) {
+        if (!hex) return;
+        const normalized = (hex.startsWith('#') ? hex : `#${hex}`).slice(0, 7);
+        const hexEl = document.getElementById('prop-stamp-accent-hex');
+        const preview = document.getElementById('prop-stamp-accent-preview');
+        if (hexEl) hexEl.textContent = normalized.toUpperCase();
+        if (preview) {
+            preview.style.setProperty('--stamp-accent-color', normalized);
+            preview.style.background = normalized;
+        }
+    }
+
+    _syncStampPresetButtons(stampType) {
+        document.querySelectorAll('.stamp-preset-btn').forEach((btn) => {
+            btn.classList.toggle('active', stampType && btn.dataset.stampType === stampType);
+        });
+    }
+
+    syncStampConfigForPlacement(config) {
+        if (!config) return;
+        this._syncingStampProps = true;
+        const presetKey = config.preset && StampKit?.listPresets().includes(config.preset) ? config.preset : '';
+        const hidden = document.getElementById('prop-stamp-type');
+        if (hidden) hidden.value = presetKey || 'approved';
+        this._syncStampPresetButtons(presetKey || 'approved');
+        const textEl = document.getElementById('prop-stamp-text');
+        if (textEl) textEl.value = config.text || '';
+        this._setColorInput('prop-stamp-accent', config.stroke || config.fill);
+        this._syncingStampProps = false;
     }
 
     showLinkProperties() {

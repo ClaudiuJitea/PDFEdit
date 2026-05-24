@@ -60,12 +60,14 @@ class PDFEditor {
         this.onObjectSelected = null;
         this.onSelectionCleared = null;
         this.onCanvasModified = null;
+        this.onDrawingComplete = null;
         this.onContextMenuRequested = null;
         this.onStickyDoubleClicked = null;
         this.onLinkAreaDrawn = null;
         this.arrowMode = false;
         this.deletedOriginals = [];
         this.stampType = 'approved';
+        this.stampConfig = StampKit.getPreset('approved');
         this.brushSettings = {
             color: '#01696f',
             width: 2,
@@ -77,6 +79,7 @@ class PDFEditor {
         this._undoProps = [
             '_elementType', '_isRedaction', 'origin', 'originalPdfBbox', '_modified',
             '_stickyColor', '_stickyText', '_stickyPinned', '_textCase', '_pdfEditId',
+            'stampType', 'stampText', 'stampConfig',
         ];
     }
 
@@ -224,6 +227,13 @@ class PDFEditor {
             if (e.target && e.target.origin === 'pdf') {
                 e.target._modified = true;
             }
+            if (e.target?._elementType === 'stamp' && e.target.stampConfig) {
+                const s = this.pdfScale || 1;
+                const w = Math.round(((e.target.width || 0) * (e.target.scaleX || 1)) / s);
+                const h = Math.round(((e.target.height || 0) * (e.target.scaleY || 1)) / s);
+                e.target.stampConfig.width = w;
+                e.target.stampConfig.height = h;
+            }
             if (this.onCanvasModified) this.onCanvasModified();
         });
         this.canvas.on('object:changed', (e) => {
@@ -251,6 +261,9 @@ class PDFEditor {
                 path.lineStyle = this.brushSettings.lineStyle;
             }
             if (this.onCanvasModified) this.onCanvasModified();
+            if (this.currentTool === 'freehand' && this.onDrawingComplete) {
+                this.onDrawingComplete(path);
+            }
         });
 
         this.canvas.on('mouse:down', (opt) => this._onMouseDown(opt));
@@ -329,22 +342,49 @@ class PDFEditor {
         });
     }
 
-    setTool(tool) {
-        this.currentTool = tool;
+    _applyCanvasCursor(tool) {
+        if (!this.canvas) return;
+        const cursor = this._getCursor(tool);
+        this.canvas.defaultCursor = cursor;
+        this.canvas.hoverCursor = cursor;
+        this.canvas.moveCursor = cursor;
+        [this.canvas.upperCanvasEl, this.canvas.lowerCanvasEl, this.canvas.wrapperEl].forEach((el) => {
+            if (el) el.style.cursor = cursor;
+        });
+    }
+
+    activateSelectTool() {
+        if (!this.canvas) return;
+        this.currentTool = 'select';
         this.canvas.isDrawingMode = false;
-        this.canvas.selection = tool === 'select';
-        this.canvas.defaultCursor = this._getCursor(tool);
-        this.canvas.hoverCursor = this._getCursor(tool);
+        this.canvas.selection = true;
+        this._applyCanvasCursor('select');
+        this.canvas.forEachObject((obj) => {
+            if (!obj._isRedaction) {
+                obj.selectable = true;
+                obj.evented = true;
+            }
+        });
+        this.canvas.requestRenderAll();
+    }
+
+    setTool(tool) {
+        if (!this.canvas) {
+            this.currentTool = tool;
+            return;
+        }
 
         if (tool === 'select') {
-            this.canvas.selection = true;
-            this.canvas.forEachObject((obj) => {
-                if (!obj._isRedaction) {
-                    obj.selectable = true;
-                    obj.evented = true;
-                }
-            });
-        } else if (tool === 'forms') {
+            this.activateSelectTool();
+            return;
+        }
+
+        this.currentTool = tool;
+        this.canvas.isDrawingMode = false;
+        this.canvas.selection = false;
+        this._applyCanvasCursor(tool);
+
+        if (tool === 'forms') {
             this.canvas.selection = false;
             this.canvas.discardActiveObject();
             this.canvas.forEachObject((obj) => {
@@ -369,6 +409,60 @@ class PDFEditor {
             });
             this.canvas.renderAll();
         }
+    }
+
+    _notifyDrawingComplete(createdObject) {
+        if (this.onDrawingComplete) {
+            this.onDrawingComplete(createdObject);
+        }
+        if (createdObject && this.canvas) {
+            this.canvas.setActiveObject(createdObject);
+            createdObject.setCoords();
+            this.canvas.requestRenderAll();
+            if (this.onObjectSelected) {
+                this.onObjectSelected(this.canvas.getActiveObjects());
+            }
+        }
+    }
+
+    _hitTestStampAtPointer(e) {
+        if (!this.canvas) return null;
+        const pointer = this.canvas.getPointer(e);
+        const objects = this.canvas.getObjects();
+        for (let i = objects.length - 1; i >= 0; i--) {
+            const obj = objects[i];
+            if (obj._elementType !== 'stamp') continue;
+            obj.setCoords();
+            if (typeof obj.containsPoint === 'function' && obj.containsPoint(pointer)) {
+                return obj;
+            }
+        }
+        return null;
+    }
+
+    _activateSelectForStampInteraction(stamp) {
+        if (!stamp) return;
+        if (this.onDrawingComplete) {
+            this.onDrawingComplete(stamp);
+        }
+        this.canvas.setActiveObject(stamp);
+        stamp.setCoords();
+        this.canvas.requestRenderAll();
+        if (this.onObjectSelected) {
+            this.onObjectSelected([stamp]);
+        }
+    }
+
+    _isShapeTooSmall(shape, tool) {
+        if (!shape) return true;
+        if (tool === 'line') {
+            const p = shape.calcLinePoints ? shape.calcLinePoints() : { x1: shape.x1, y1: shape.y1, x2: shape.x2, y2: shape.y2 };
+            const len = Math.hypot((p.x2 || 0) - (p.x1 || 0), (p.y2 || 0) - (p.y1 || 0));
+            return len < 5;
+        }
+        shape.setCoords();
+        const bounds = shape.getBoundingRect(true, true);
+        return bounds.width < 5 && bounds.height < 5;
     }
 
     _isTextLinkTarget(obj) {
@@ -631,6 +725,13 @@ class PDFEditor {
         if (this.currentTool === 'select' || this.currentTool === 'forms' || this.currentTool === 'eraser') return;
         if (this.currentTool === 'link' && !this._linkDrawMode) return;
 
+        const hitStamp = this._hitTestStampAtPointer(opt.e);
+        if (hitStamp) {
+            this.isDrawing = false;
+            this._activateSelectForStampInteraction(hitStamp);
+            return;
+        }
+
         const pointer = this.canvas.getPointer(opt.e);
         this.startX = pointer.x;
         this.startY = pointer.y;
@@ -641,10 +742,12 @@ class PDFEditor {
                 this._createText(pointer.x, pointer.y);
                 this.isDrawing = false;
                 break;
-            case 'sticky':
-                this._createSticky(pointer.x, pointer.y);
+            case 'sticky': {
+                const sticky = this._createSticky(pointer.x, pointer.y);
                 this.isDrawing = false;
+                this._notifyDrawingComplete(sticky);
                 break;
+            }
             case 'image':
                 this.isDrawing = false;
                 break;
@@ -666,10 +769,12 @@ class PDFEditor {
             case 'redaction':
                 this.drawingShape = this._createRedaction(pointer.x, pointer.y);
                 break;
-            case 'stamp':
-                this._placeStamp(pointer.x, pointer.y);
+            case 'stamp': {
+                const stamp = this._placeStamp(pointer.x, pointer.y);
                 this.isDrawing = false;
+                this._notifyDrawingComplete(stamp);
                 break;
+            }
             case 'link':
                 if (this._linkDrawMode === false) {
                     this.isDrawing = false;
@@ -734,12 +839,15 @@ class PDFEditor {
                 const canvas_bbox = this.canvasBoundsToCanvasBbox(bounds);
                 this.canvas.remove(this.drawingShape);
                 this.onLinkAreaDrawn({ pdf_bbox, bbox: canvas_bbox });
+            } else if (this._isShapeTooSmall(this.drawingShape, this.currentTool)) {
+                this.canvas.remove(this.drawingShape);
             } else {
-                this.canvas.setActiveObject(this.drawingShape);
-                if (this.drawingShape._isRedaction) {
-                    this.drawingShape.selectable = true;
-                    this.drawingShape.evented = true;
+                const created = this.drawingShape;
+                if (created._isRedaction) {
+                    created.selectable = true;
+                    created.evented = true;
                 }
+                this._notifyDrawingComplete(created);
             }
 
             this.drawingShape = null;
@@ -751,6 +859,19 @@ class PDFEditor {
         const target = opt.target;
         if (target && target._elementType === 'sticky' && this.onStickyDoubleClicked) {
             this.onStickyDoubleClicked(target);
+        }
+
+        if (target && target._elementType === 'stamp') {
+            const cfg = target.stampConfig || this.getStampConfigFromGroup(target);
+            const newText = prompt("Edit Stamp Text:", cfg.text || "");
+            if (newText !== null) {
+                this.rebuildStamp(target, { text: newText });
+                const textEl = document.getElementById('prop-stamp-text');
+                if (textEl) {
+                    textEl.value = newText;
+                }
+                if (this.onCanvasModified) this.onCanvasModified();
+            }
         }
     }
 
@@ -811,10 +932,10 @@ class PDFEditor {
         });
         this.canvas.add(textbox);
         this._registerCanvasObject(textbox);
-        this.canvas.setActiveObject(textbox);
         textbox.enterEditing();
         textbox.selectAll();
         if (this.onCanvasModified) this.onCanvasModified();
+        return textbox;
     }
 
     _createSticky(x, y) {
@@ -841,8 +962,8 @@ class PDFEditor {
         });
 
         this.canvas.add(group);
-        this.canvas.setActiveObject(group);
         if (this.onCanvasModified) this.onCanvasModified();
+        return group;
     }
 
     _buildStickyIcon(color) {
@@ -995,42 +1116,119 @@ class PDFEditor {
         return rect;
     }
 
-    _placeStamp(x, y) {
-        const labels = {
-            approved: 'APPROVED',
-            draft: 'DRAFT',
-            confidential: 'CONFIDENTIAL',
-            void: 'VOID',
-        };
-        const text = labels[this.stampType] || 'APPROVED';
-        const w = 120 * this.pdfScale;
-        const h = 40 * this.pdfScale;
-        const rect = new fabric.Rect({
-            width: w,
-            height: h,
-            fill: 'rgba(255, 0, 0, 0.08)',
-            stroke: '#cc0000',
-            strokeWidth: 2,
-            originX: 'center',
-            originY: 'center',
-        });
-        const label = new fabric.Text(text, {
-            fontSize: 16 * this.pdfScale,
-            fill: '#cc0000',
-            fontFamily: 'Helvetica',
-            fontWeight: 'bold',
-            originX: 'center',
-            originY: 'center',
-        });
-        const group = new fabric.Group([rect, label], {
-            left: x - w / 2,
-            top: y - h / 2,
+    getStampConfigFromGroup(group) {
+        if (group?.stampConfig) {
+            return StampKit.cloneConfig(group.stampConfig);
+        }
+        if (group?.stampType && StampKit.listPresets().includes(group.stampType)) {
+            return StampKit.mergeConfig(StampKit.getPreset(group.stampType), {
+                text: group.stampText,
+            });
+        }
+        return StampKit.cloneConfig(this.stampConfig);
+    }
+
+    _createStampGroup(config, left, top, options = {}) {
+        const cfg = StampKit.mergeConfig(config);
+        const { parts, width, height } = StampKit.buildParts(cfg, this.pdfScale);
+        const {
+            angle = cfg.defaultRotation || 0,
+            scaleX = 1,
+            scaleY = 1,
+            opacity = 1,
+        } = options;
+
+        const group = new fabric.Group(parts, {
+            left,
+            top,
             _elementType: 'stamp',
-            stampType: this.stampType,
-            stampText: text,
+            stampType: cfg.preset || 'custom',
+            stampText: cfg.text,
+            stampConfig: cfg,
+            angle,
+            scaleX,
+            scaleY,
+            opacity,
+            hasControls: true,
+            hasBorders: true,
+            lockRotation: false,
+            lockScalingX: false,
+            lockScalingY: false,
+            lockUniScaling: false,
+            subTargetCheck: false,
+        });
+        group.setCoords();
+        return group;
+    }
+
+    rebuildStamp(group, configPatch, options = {}) {
+        if (!group || group._elementType !== 'stamp' || !this.canvas) {
+            return null;
+        }
+
+        const center = group.getCenterPoint();
+        const angle = options.angle != null ? options.angle : (group.angle || 0);
+        const opacity = options.opacity != null ? options.opacity : (group.opacity ?? 1);
+        const wasActive = this.canvas.getActiveObject() === group;
+
+        const targetW = (group.width || 1) * (group.scaleX || 1);
+        const targetH = (group.height || 1) * (group.scaleY || 1);
+
+        const s = this.pdfScale || 1;
+        if (group.stampConfig) {
+            group.stampConfig.width = Math.round(targetW / s);
+            group.stampConfig.height = Math.round(targetH / s);
+        }
+
+        const cfg = StampKit.mergeConfig(this.getStampConfigFromGroup(group), configPatch);
+
+        // Create the new group initially at 0, 0
+        const newGroup = this._createStampGroup(cfg, 0, 0, { angle, opacity });
+
+        const baseW = newGroup.width || (cfg.width || 168) * s;
+        const baseH = newGroup.height || (cfg.height || 52) * s;
+        newGroup.set({
+            scaleX: targetW / baseW,
+            scaleY: targetH / baseH,
+        });
+        newGroup.setCoords();
+
+        // Position it exactly around the original center point
+        newGroup.setPositionByOrigin(center, 'center', 'center');
+        newGroup.setCoords();
+
+        const index = this.canvas.getObjects().indexOf(group);
+        this.canvas.remove(group);
+        if (index >= 0) {
+            this.canvas.insertAt(newGroup, index, false);
+        } else {
+            this.canvas.add(newGroup);
+        }
+
+        if (wasActive) {
+            this.canvas.setActiveObject(newGroup);
+        }
+        this.canvas.requestRenderAll();
+        if (this.onCanvasModified) this.onCanvasModified();
+        return newGroup;
+    }
+
+    setStampConfig(config) {
+        this.stampConfig = StampKit.mergeConfig(config);
+        if (this.stampConfig.preset) {
+            this.stampType = this.stampConfig.preset;
+        }
+    }
+
+    _placeStamp(x, y) {
+        const cfg = StampKit.cloneConfig(this.stampConfig);
+        const { width, height } = StampKit.measure(cfg, this.pdfScale);
+        const group = this._createStampGroup(cfg, x - width / 2, y - height / 2, {
+            angle: cfg.defaultRotation || 0,
         });
         this.canvas.add(group);
-        this.canvas.setActiveObject(group);
+        if (this.onCanvasModified) this.onCanvasModified();
+        return group;
     }
 
     _createLinkArea(x, y) {
@@ -1052,7 +1250,9 @@ class PDFEditor {
     }
 
     setStampType(type) {
-        this.stampType = type || 'approved';
+        const key = type || 'approved';
+        this.stampType = StampKit.listPresets().includes(key) ? key : 'approved';
+        this.stampConfig = StampKit.getPreset(this.stampType);
     }
 
     showSearchHighlights(matches, activeIndex = 0) {
@@ -1219,7 +1419,9 @@ class PDFEditor {
     }
 
     loadElements(elements) {
-        const orderPriority = { 'rect': 0, 'ellipse': 0, 'path': 0, 'highlight': 0, 'redaction': 0, 'sticky': 0, 'image': 1, 'text': 2 };
+        const orderPriority = {
+            rect: 0, ellipse: 0, path: 0, highlight: 0, redaction: 0, sticky: 0, stamp: 0, image: 1, text: 2,
+        };
         const sorted = [...elements].sort((a, b) => {
             const pa = orderPriority[a.type] ?? 1;
             const pb = orderPriority[b.type] ?? 1;
@@ -1393,6 +1595,35 @@ class PDFEditor {
                     hl.set('opacity', elem.opacity);
                 }
                 this.canvas.add(hl);
+                break;
+            }
+            case 'stamp': {
+                let cfg = elem.stampConfig
+                    ? StampKit.cloneConfig(elem.stampConfig)
+                    : StampKit.getPreset(elem.stampType || 'approved');
+                if (elem.text && !elem.stampConfig) {
+                    cfg.text = elem.text;
+                }
+                const group = this._createStampGroup(cfg, bbox[0], bbox[1]);
+                const targetW = bbox[2] - bbox[0];
+                const targetH = bbox[3] - bbox[1];
+                const gw = group.width || 1;
+                const gh = group.height || 1;
+                if (targetW > 0 && targetH > 0) {
+                    group.set({
+                        scaleX: targetW / gw,
+                        scaleY: targetH / gh,
+                    });
+                }
+                if (elem.angle != null) {
+                    group.set('angle', elem.angle);
+                }
+                if (elem.opacity !== undefined && elem.opacity < 1) {
+                    group.set('opacity', elem.opacity);
+                }
+                group.setCoords();
+                this.canvas.add(group);
+                this._registerCanvasObject(group);
                 break;
             }
             case 'sticky': {
@@ -1789,11 +2020,18 @@ class PDFEditor {
                 if (obj.shadow) base.textShadow = true;
             } else if (obj.type === 'group' && obj._elementType === 'stamp') {
                 base.type = 'stamp';
-                const bounds = obj.getBoundingRect();
-                base.bbox = [bounds.left, bounds.top, bounds.left + bounds.width, bounds.top + bounds.height];
-                base.pdf_bbox = [bounds.left / scale, bounds.top / scale, (bounds.left + bounds.width) / scale, (bounds.top + bounds.height) / scale];
-                base.stampType = obj.stampType || 'approved';
-                base.text = obj.stampText || 'APPROVED';
+                const center = obj.getCenterPoint();
+                const w = (obj.width || 1) * (obj.scaleX || 1);
+                const h = (obj.height || 1) * (obj.scaleY || 1);
+                const left = center.x - w / 2;
+                const top = center.y - h / 2;
+                base.bbox = [left, top, left + w, top + h];
+                base.pdf_bbox = [left / scale, top / scale, (left + w) / scale, (top + h) / scale];
+                base.stampType = obj.stampType || obj.stampConfig?.preset || 'custom';
+                base.stampConfig = StampKit.cloneConfig(obj.stampConfig || this.getStampConfigFromGroup(obj));
+                base.text = base.stampConfig.text || obj.stampText || 'STAMP';
+                if (obj.angle) base.angle = obj.angle;
+                if (obj.opacity != null && obj.opacity < 1) base.opacity = obj.opacity;
             } else if (obj.type === 'image') {
                 base.type = 'image';
                 const left = obj.left || 0;

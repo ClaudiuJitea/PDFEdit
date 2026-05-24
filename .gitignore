@@ -50,5 +50,9 @@ secrets.yaml
 # Project specific
 uploads/
 temp/
-*.pdf
+data/unsaved/*
+!data/unsaved/.gitkeep
+data/saved/*
+!data/saved/.gitkeep
 sessions_db.json
+sessions_db.json.migrated
