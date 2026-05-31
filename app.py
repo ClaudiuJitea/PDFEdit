@@ -1,7 +1,6 @@
 import base64
 import csv
 import io
-import json
 import os
 import sys
 import uuid
@@ -13,6 +12,9 @@ from flask_cors import CORS
 from PIL import Image, ImageDraw
 
 import session_storage as store
+import ai_settings
+import ai_service
+from ai_service import AIServiceError
 
 app = Flask(__name__)
 CORS(app)
@@ -47,8 +49,6 @@ FONT_MAP = {
     "Courier-Oblique": "coit",
     "Courier-BoldOblique": "cobi",
 }
-
-REVERSE_FONT_MAP = {v: k for k, v in FONT_MAP.items()}
 
 WIDGET_KIND_MAP = {
     fitz.PDF_WIDGET_TYPE_TEXT: "text",
@@ -343,55 +343,10 @@ def pdf_text_align(align):
     return mapping.get((align or "left").lower(), fitz.TEXT_ALIGN_LEFT)
 
 
-def get_font_flags(bold=False, italic=False):
-    flags = 0
-    if bold:
-        flags |= 2 ** 4
-    if italic:
-        flags |= 2 ** 1
-    return flags
-
-
 def validate_pdf_magic(data):
     if len(data) < 5:
         return False
     return data[:5] == b"%PDF-"
-
-
-def sample_background_color(img, x0, y0, x1, y1):
-    width, height = img.size
-    x0 = max(0, min(width - 1, x0))
-    y0 = max(0, min(height - 1, y0))
-    x1 = max(0, min(width - 1, x1))
-    y1 = max(0, min(height - 1, y1))
-
-    samples = []
-
-    def add_horizontal(y):
-        if y < 0 or y >= height:
-            return
-        step = max(1, (x1 - x0) // 24)
-        for x in range(x0, x1 + 1, step):
-            samples.append(img.getpixel((x, y)))
-
-    def add_vertical(x):
-        if x < 0 or x >= width:
-            return
-        step = max(1, (y1 - y0) // 24)
-        for y in range(y0, y1 + 1, step):
-            samples.append(img.getpixel((x, y)))
-
-    add_horizontal(y0 - 2)
-    add_horizontal(y1 + 2)
-    add_vertical(x0 - 2)
-    add_vertical(x1 + 2)
-
-    if not samples:
-        return (255, 255, 255)
-
-    samples.sort()
-    mid = len(samples) // 2
-    return samples[mid]
 
 
 def _sample_page_background(img, width, height):
@@ -532,19 +487,6 @@ def resolve_elem_pdf_bbox(page, elem, default_width, default_height):
     return page_rect_to_pdf(page, [left, top, left + width, top + height])
 
 
-def cover_page_bbox(img, draw, page, bbox, dpi_scale, pad=2):
-    view_bbox = page_rect_to_view(page, bbox)
-    x0 = int(view_bbox[0] * dpi_scale)
-    y0 = int(view_bbox[1] * dpi_scale)
-    x1 = int(view_bbox[2] * dpi_scale)
-    y1 = int(view_bbox[3] * dpi_scale)
-    bg_color = sample_background_color(img, x0, y0, x1, y1)
-    draw.rectangle(
-        [x0 - pad, y0 - pad, x1 + pad, y1 + pad],
-        fill=bg_color,
-    )
-
-
 def span_color_to_hex(span):
     color = span.get("color", 0)
     if isinstance(color, int):
@@ -564,6 +506,96 @@ def normalize_font_family(font_name):
     if "Arial" in name:
         return "Helvetica"
     return "Helvetica"
+
+
+OCR_EDITOR_FONTS = frozenset({
+    "Helvetica",
+    "Times New Roman",
+    "Courier New",
+    "Arial",
+    "Georgia",
+    "Verdana",
+    "Trebuchet MS",
+    "Palatino",
+    "Garamond",
+    "Comic Sans MS",
+})
+
+def normalize_ocr_font_family(font_name):
+    name = (font_name or "").strip()
+    if name in OCR_EDITOR_FONTS:
+        return name
+    return "Helvetica"
+
+
+def _ocr_bool_flag(value, true_tokens=()):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes", "on"):
+        return True
+    if text in ("false", "0", "no", "off", ""):
+        return False
+    return any(text == t or t in text for t in true_tokens)
+
+
+def _ocr_fill_from_block(block):
+    for key in ("color", "fill", "textColor", "text_color"):
+        raw = block.get(key)
+        if not raw:
+            continue
+        rgb = parse_color_input(str(raw).strip())
+        if rgb:
+            return color_to_hex(*rgb)
+    return "#111111"
+
+
+def ocr_style_from_block(block, line_h_pt, scale, font_family="Helvetica"):
+    block = block if isinstance(block, dict) else {}
+    line_h = max(float(line_h_pt or 12), 12.0)
+    default_size = min(20.0, max(10.0, line_h * scale * 0.65))
+
+    font_family = normalize_ocr_font_family(font_family)
+
+    font_size = default_size
+    for key in ("fontSize", "font_size", "size"):
+        raw = block.get(key)
+        if raw is None:
+            continue
+        try:
+            candidate = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if 6.0 <= candidate <= 200.0:
+            font_size = candidate
+            break
+
+    bold = _ocr_bool_flag(block.get("bold"), ("bold", "semibold", "heavy"))
+    if not bold:
+        weight = block.get("fontWeight") or block.get("font_weight")
+        if weight is not None:
+            try:
+                bold = float(weight) >= 600
+            except (TypeError, ValueError):
+                bold = _ocr_bool_flag(weight, ("bold", "600", "700", "800", "900"))
+
+    italic = _ocr_bool_flag(block.get("italic"), ("italic", "oblique"))
+    if not italic:
+        style = block.get("fontStyle") or block.get("font_style")
+        if style:
+            italic = _ocr_bool_flag(style, ("italic", "oblique"))
+
+    return {
+        "fontFamily": font_family,
+        "fontSize": font_size,
+        "fill": _ocr_fill_from_block(block),
+        "bold": bold,
+        "italic": italic,
+    }
 
 
 def union_bboxes(boxes):
@@ -812,6 +844,473 @@ def build_text_element_from_spans(page, spans, scale):
     }
 
 
+def _block_has_explicit_coords(block):
+    if isinstance(block.get("bbox"), (list, tuple)) and len(block["bbox"]) >= 4:
+        return True
+    if isinstance(block.get("box"), (list, tuple)) and len(block["box"]) >= 4:
+        return True
+    for key in ("x0", "y0", "x1", "y1", "left", "top", "right", "bottom"):
+        if key in block and block[key] is not None:
+            return True
+    return False
+
+
+def normalize_vision_bbox(block, page_width, page_height, render_scale=RENDER_SCALE, stacked_index=0):
+    """Map model bbox to PDF points (top-left origin, y increases downward)."""
+    block = dict(block)
+    bbox = block.get("bbox") or block.get("box")
+    if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
+        block["x0"], block["y0"], block["x1"], block["y1"] = bbox[0], bbox[1], bbox[2], bbox[3]
+    if "left" in block and "top" in block:
+        block.setdefault("x0", block.get("left"))
+        block.setdefault("y0", block.get("top"))
+        block.setdefault("x1", block.get("right", block.get("left", 0) + 100))
+        block.setdefault("y1", block.get("bottom", block.get("top", 0) + 14))
+
+    if not _block_has_explicit_coords(block):
+        margin = 72.0
+        line_height = 18.0
+        text = str(block.get("text") or "")
+        y0 = margin + stacked_index * (line_height * 1.45)
+        width = min(page_width - 2 * margin, max(len(text) * 5.5, 200.0))
+        return margin, y0, margin + width, min(page_height, y0 + line_height)
+
+    try:
+        x0 = float(block.get("x0", 0))
+        y0 = float(block.get("y0", 0))
+        x1 = float(block.get("x1", x0 + 100))
+        y1 = float(block.get("y1", y0 + 14))
+    except (TypeError, ValueError):
+        return None
+
+    if x0 > x1:
+        x0, x1 = x1, x0
+    if y0 > y1:
+        y0, y1 = y1, y0
+
+    max_coord = max(abs(x0), abs(y0), abs(x1), abs(y1), 1.0)
+
+    # 0–1 normalized (common from vision models)
+    if max_coord <= 1.5:
+        x0, x1 = x0 * page_width, x1 * page_width
+        y0, y1 = y0 * page_height, y1 * page_height
+    # 0–100 percent
+    elif max_coord <= 100.0:
+        x0, x1 = x0 / 100.0 * page_width, x1 / 100.0 * page_width
+        y0, y1 = y0 / 100.0 * page_height, y1 / 100.0 * page_height
+    # Rendered PNG pixel coords (page sent at render_scale)
+    elif max(x1, y1) > max(page_width, page_height) * 1.15:
+        x0, x1 = x0 / render_scale, x1 / render_scale
+        y0, y1 = y0 / render_scale, y1 / render_scale
+
+    x0 = max(0.0, min(x0, page_width))
+    x1 = max(0.0, min(x1, page_width))
+    y0 = max(0.0, min(y0, page_height))
+    y1 = max(0.0, min(y1, page_height))
+
+    if x1 <= x0:
+        x1 = min(page_width, x0 + max(len(str(block.get("text") or "")) * 5, 48))
+    if y1 <= y0:
+        y1 = min(page_height, y0 + 14)
+
+    return x0, y0, x1, y1
+
+
+def ocr_full_text_from_result(lines, elements, blocks=None):
+    """Best-effort full transcript for the AI OCR modal."""
+    text = ai_service.normalize_ocr_text_content("\n".join(lines or []).strip())
+    if text:
+        return text
+    for block in blocks or []:
+        if not isinstance(block, dict):
+            continue
+        block_text = ai_service.normalize_ocr_text_content(
+            (block.get("text") or block.get("content") or "").strip()
+        )
+        if block_text:
+            return block_text
+    parts = []
+    for elem in elements or []:
+        if elem.get("type") != "text":
+            continue
+        part = (elem.get("text") or "").strip()
+        if part:
+            parts.append(part)
+    return "\n".join(parts).strip()
+
+
+def extract_ocr_lines_from_blocks(blocks):
+    """Flatten model output to unique lines in reading order (no duplicate paragraphs)."""
+    raw_lines = []
+    for block in blocks or []:
+        if not isinstance(block, dict):
+            if isinstance(block, str) and block.strip():
+                raw_lines.append(block.strip())
+            continue
+        text = ai_service.normalize_ocr_text_content(
+            (block.get("text") or block.get("content") or "").strip()
+        )
+        if not text:
+            continue
+        for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+            line = line.strip()
+            if line:
+                raw_lines.append(line)
+
+    if not raw_lines:
+        return []
+
+    # Drop consecutive duplicates
+    deduped = []
+    for line in raw_lines:
+        if deduped and deduped[-1] == line:
+            continue
+        deduped.append(line)
+
+    # If the model repeated the full letter in every block, keep one copy of each distinct line
+    seen = set()
+    unique = []
+    for line in deduped:
+        if line in seen:
+            continue
+        seen.add(line)
+        unique.append(line)
+
+    # Remove lines that are strict substrings of another line (keep shorter list readable)
+    filtered = []
+    for line in unique:
+        if any(line != other and line in other for other in unique):
+            continue
+        filtered.append(line)
+
+    return filtered if filtered else unique
+
+
+def get_page_content_image_bboxes(page):
+    """PDF bounding boxes of embedded images (scans, letter artwork, etc.)."""
+    bboxes = []
+    seen = set()
+
+    def add_bbox(bbox):
+        if not bbox or len(bbox) < 4:
+            return
+        try:
+            coords = [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])]
+        except (TypeError, ValueError):
+            return
+        if coords[2] <= coords[0] or coords[3] <= coords[1]:
+            return
+        key = tuple(round(c, 1) for c in coords)
+        if key in seen:
+            return
+        seen.add(key)
+        bboxes.append(coords)
+
+    try:
+        for img_info in page.get_images(full=True):
+            try:
+                rect = page.get_image_bbox(img_info)
+                if rect.is_empty or rect.is_infinite:
+                    continue
+                add_bbox([rect.x0, rect.y0, rect.x1, rect.y1])
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    try:
+        preserve = getattr(fitz, "TEXT_PRESERVE_IMAGES", 0)
+        flags = fitz.TEXTFLAGS_TEXT | preserve
+        text_dict = page.get_text("dict", flags=flags)
+        for block in text_dict.get("blocks", []):
+            if block.get("type") != 1:
+                continue
+            bbox = block.get("bbox")
+            if bbox:
+                add_bbox(bbox)
+    except Exception:
+        pass
+
+    return bboxes
+
+
+def expand_pdf_bbox(page, bbox, pad=12.0):
+    if not bbox or len(bbox) < 4:
+        return bbox
+    rect = page.rect
+    x0 = max(rect.x0, float(bbox[0]) - pad)
+    y0 = max(rect.y0, float(bbox[1]) - pad)
+    x1 = min(rect.x1, float(bbox[2]) + pad)
+    y1 = min(rect.y1, float(bbox[3]) + pad)
+    return [x0, y0, x1, y1]
+
+
+def render_page_with_white_masks(page, pdf_bboxes, dpi_scale=RENDER_SCALE):
+    """Re-render page PNG with OCR/source regions painted white."""
+    mat = fitz.Matrix(dpi_scale, dpi_scale)
+    pix = page.get_pixmap(matrix=mat, alpha=False, annots=False)
+    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    draw = ImageDraw.Draw(img)
+    for bbox in pdf_bboxes or []:
+        if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+            expanded = expand_pdf_bbox(page, bbox, pad=10.0)
+            _cover_with_color(draw, page, expanded, dpi_scale, (255, 255, 255), pad=2)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
+def union_pdf_bboxes(bboxes):
+    if not bboxes:
+        return None
+    x0 = min(b[0] for b in bboxes)
+    y0 = min(b[1] for b in bboxes)
+    x1 = max(b[2] for b in bboxes)
+    y1 = max(b[3] for b in bboxes)
+    return [x0, y0, x1, y1]
+
+
+def _block_pdf_bbox(block):
+    if not isinstance(block, dict):
+        return None
+    try:
+        if all(k in block for k in ("x0", "y0", "x1", "y1")):
+            return [
+                float(block["x0"]),
+                float(block["y0"]),
+                float(block["x1"]),
+                float(block["y1"]),
+            ]
+        raw = block.get("bbox") or block.get("rect")
+        if isinstance(raw, (list, tuple)) and len(raw) >= 4:
+            return [float(raw[0]), float(raw[1]), float(raw[2]), float(raw[3])]
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def _make_ocr_text_elements(page, block, pdf_bbox, scale, font_family="Helvetica", pad=3.0):
+    """White mask + editable text element for one OCR block."""
+    line_h = max(pdf_bbox[3] - pdf_bbox[1], 12.0)
+    style = ocr_style_from_block(block, line_h, scale, font_family)
+    mask_bbox = [
+        pdf_bbox[0] - pad,
+        pdf_bbox[1] - pad,
+        pdf_bbox[2] + pad,
+        pdf_bbox[3] + pad,
+    ]
+    text = ai_service.normalize_ocr_text_content(
+        (block.get("text") or block.get("content") or "").strip()
+    )
+    return [
+        {
+            "type": "rect",
+            "bbox": scaled_view_bbox(page, mask_bbox, scale),
+            "pdf_bbox": mask_bbox,
+            "fill": "#ffffff",
+            "stroke": "transparent",
+            "strokeWidth": 0,
+            "origin": "ocr",
+        },
+        {
+            "type": "text",
+            "text": text,
+            "bbox": scaled_view_bbox(page, pdf_bbox, scale),
+            "pdf_bbox": pdf_bbox,
+            "fontFamily": style["fontFamily"],
+            "fontSize": style["fontSize"],
+            "fill": style["fill"],
+            "backgroundColor": "#ffffff",
+            "bold": style["bold"],
+            "italic": style["italic"],
+            "origin": "ocr",
+            "lineHeight": 1.15,
+        },
+    ]
+
+
+def _ocr_blocks_dominant_color(blocks):
+    """Return the most relevant text color from AI OCR blocks, or None."""
+    if not blocks:
+        return None
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if not (block.get("text") or "").strip():
+            continue
+        raw = block.get("color") or block.get("fill") or block.get("textColor") or block.get("text_color")
+        if raw:
+            return str(raw).strip()
+    return None
+
+
+def build_ocr_elements_for_source_regions(
+    page, lines, source_bboxes, scale=RENDER_SCALE, blocks=None, font_family="Helvetica"
+):
+    """Mask real source regions (e.g. embedded images) and place text in their union box."""
+    elements = []
+    if not lines or not source_bboxes:
+        return elements
+
+    pad = 4.0
+    full_text = "\n".join(lines)
+    union = union_pdf_bboxes(source_bboxes)
+    if not union:
+        return elements
+
+    page_width = float(page.rect.width)
+    page_height = float(page.rect.height)
+    ux0, uy0, ux1, uy1 = union
+    text_bbox = [ux0, uy0, ux1, uy1]
+    line_count = max(1, len(lines))
+    region_h = max(uy1 - uy0, 17.0)
+    canvas_font = min(22.0, max(10.0, (region_h / line_count) * scale * 0.42))
+
+    font_family = normalize_ocr_font_family(font_family)
+    fill_color = _ocr_blocks_dominant_color(blocks) or "#111111"
+
+    for pdf_bbox in source_bboxes:
+        mask_bbox = [
+            pdf_bbox[0] - pad,
+            pdf_bbox[1] - pad,
+            pdf_bbox[2] + pad,
+            pdf_bbox[3] + pad,
+        ]
+        elements.append({
+            "type": "rect",
+            "bbox": scaled_view_bbox(page, mask_bbox, scale),
+            "pdf_bbox": mask_bbox,
+            "fill": "#ffffff",
+            "stroke": "transparent",
+            "strokeWidth": 0,
+            "origin": "ocr",
+        })
+
+    elements.append({
+        "type": "text",
+        "text": full_text,
+        "bbox": scaled_view_bbox(page, text_bbox, scale),
+        "pdf_bbox": text_bbox,
+        "fontFamily": font_family,
+        "fontSize": canvas_font,
+        "fill": fill_color,
+        "backgroundColor": "#ffffff",
+        "bold": False,
+        "italic": False,
+        "origin": "ocr",
+        "lineHeight": 1.15,
+    })
+    return elements
+
+
+def build_ai_ocr_elements_from_blocks(page, blocks, scale=RENDER_SCALE, font_family="Helvetica"):
+    """Build OCR overlays; use vision coordinates or embedded image regions when possible."""
+    blocks = blocks or []
+    page_width = float(page.rect.width)
+    page_height = float(page.rect.height)
+    coord_blocks = []
+    coord_index = 0
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        text = (block.get("text") or block.get("content") or "").strip()
+        if not text or not _block_has_explicit_coords(block):
+            continue
+        normalized = normalize_vision_bbox(
+            block, page_width, page_height, scale, stacked_index=coord_index
+        )
+        if not normalized:
+            continue
+        x0, y0, x1, y1 = normalized
+        merged = dict(block)
+        merged.update(x0=x0, y0=y0, x1=x1, y1=y1)
+        coord_blocks.append(merged)
+        coord_index += 1
+
+    if coord_blocks:
+        elements = []
+        for block in coord_blocks:
+            pdf_bbox = _block_pdf_bbox(block)
+            if pdf_bbox:
+                elements.extend(
+                    _make_ocr_text_elements(page, block, pdf_bbox, scale, font_family)
+                )
+        return elements
+
+    lines = extract_ocr_lines_from_blocks(blocks)
+    image_bboxes = get_page_content_image_bboxes(page)
+    if image_bboxes:
+        return build_ocr_elements_for_source_regions(
+            page, lines, image_bboxes, scale, blocks=blocks, font_family=font_family
+        )
+    return build_clean_ai_ocr_elements(
+        page, lines, scale, blocks=blocks, font_family=font_family
+    )
+
+
+def build_clean_ai_ocr_elements(page, lines, scale=RENDER_SCALE, blocks=None, font_family="Helvetica"):
+    """Place OCR as readable stacked lines with white masks over the scan."""
+    elements = []
+    if not lines:
+        return elements
+
+    page_width = float(page.rect.width)
+    page_height = float(page.rect.height)
+    margin_x = 54.0
+    line_height = 17.0
+    line_gap = 1.38
+    pad = 3.0
+    canvas_font = min(20.0, max(11.0, line_height * scale * 0.72))
+
+    font_family = normalize_ocr_font_family(font_family)
+    fill_color = _ocr_blocks_dominant_color(blocks) or "#111111"
+
+    y = margin_x
+    for line in lines:
+        if y + line_height > page_height - margin_x:
+            break
+        x0 = margin_x
+        x1 = page_width - margin_x
+        text_bbox = [x0, y, x1, y + line_height]
+        mask_bbox = [x0 - pad, y - pad, x1 + pad, y + line_height + pad]
+
+        elements.append({
+            "type": "rect",
+            "bbox": scaled_view_bbox(page, mask_bbox, scale),
+            "pdf_bbox": mask_bbox,
+            "fill": "#ffffff",
+            "stroke": "transparent",
+            "strokeWidth": 0,
+            "origin": "ocr",
+        })
+        elements.append({
+            "type": "text",
+            "text": line,
+            "bbox": scaled_view_bbox(page, text_bbox, scale),
+            "pdf_bbox": text_bbox,
+            "fontFamily": font_family,
+            "fontSize": canvas_font,
+            "fill": fill_color,
+            "backgroundColor": "#ffffff",
+            "bold": False,
+            "italic": False,
+            "origin": "ocr",
+            "lineHeight": 1.15,
+        })
+        y += line_height * line_gap
+
+    return elements
+
+
+def _ai_error_response(exc):
+    if isinstance(exc, AIServiceError):
+        payload = {"error": exc.message}
+        if exc.detail:
+            payload["detail"] = exc.detail
+        return jsonify(payload), exc.status_code
+    return jsonify({"error": str(exc)}), 502
+
+
 def render_page_to_png(page, dpi_scale=2, hide_text=False, hide_editable=False, mask_elements=None):
     mat = fitz.Matrix(dpi_scale, dpi_scale)
     pix = page.get_pixmap(matrix=mat, alpha=False, annots=False)
@@ -860,7 +1359,7 @@ def render_page_to_png(page, dpi_scale=2, hide_text=False, hide_editable=False, 
     return base64.b64encode(img_data).decode("utf-8")
 
 
-def render_page_thumbnail(page, max_height=150):
+def render_page_thumbnail(page, max_height=320):
     page_rect = page.rect
     scale = max_height / page_rect.height
     mat = fitz.Matrix(scale, scale)
@@ -1846,6 +2345,11 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/favicon.ico")
+def favicon():
+    return "", 204
+
+
 @app.route("/api/upload", methods=["POST"])
 def upload_pdf():
     if "file" not in request.files:
@@ -2053,6 +2557,56 @@ def new_pdf():
         "page_count": 1,
         "page_sizes": page_sizes,
     })
+
+
+@app.route("/api/page/<session_id>/<int:page_num>/masked-preview", methods=["POST"])
+def page_masked_preview(session_id, page_num):
+    """Re-render page PNG with given PDF regions covered (removes scan/image source)."""
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    doc = entry["doc"]
+    if page_num < 0 or page_num >= len(doc):
+        return jsonify({"error": "Page out of range"}), 400
+
+    body = request.get_json(silent=True) or {}
+    pdf_bboxes = body.get("pdf_bboxes") or []
+    mask_elements = []
+    for bbox in pdf_bboxes:
+        if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+            mask_elements.append({"pdf_bbox": [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])]})
+
+    page = doc[page_num]
+    pdf_bbox_list = [
+        elem["pdf_bbox"] for elem in mask_elements if elem.get("pdf_bbox")
+    ]
+    b64 = render_page_with_white_masks(page, pdf_bbox_list)
+    rect = page.rect
+
+    return jsonify({
+        "image": f"data:image/png;base64,{b64}",
+        "width": rect.width * RENDER_SCALE,
+        "height": rect.height * RENDER_SCALE,
+        "pdf_width": rect.width,
+        "pdf_height": rect.height,
+    })
+
+
+@app.route("/api/page/<session_id>/<int:page_num>/source-regions", methods=["GET"])
+def page_source_regions(session_id, page_num):
+    """Return PDF bboxes of image/scanned content on the page."""
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    doc = entry["doc"]
+    if page_num < 0 or page_num >= len(doc):
+        return jsonify({"error": "Page out of range"}), 400
+
+    page = doc[page_num]
+    bboxes = get_page_content_image_bboxes(page)
+    return jsonify({"pdf_bboxes": bboxes, "count": len(bboxes)})
 
 
 @app.route("/api/page/<session_id>/<int:page_num>", methods=["GET"])
@@ -3223,6 +3777,188 @@ def session_drafts(session_id):
         "currentPage": body.get("currentPage", 0),
     })
     return jsonify({"success": True})
+
+
+@app.route("/api/ai/settings", methods=["GET", "PUT"])
+def ai_settings_route():
+    if request.method == "GET":
+        return jsonify(ai_settings.get_public_settings())
+
+    if not ai_settings.check_settings_token(request.headers):
+        return jsonify({"error": "Unauthorized"}), 403
+
+    body = request.get_json(silent=True) or {}
+    api_key = body.get("api_key")
+    model = body.get("model")
+    if api_key is not None and not str(api_key).strip():
+        api_key = None
+    try:
+        public = ai_settings.save_settings(api_key=api_key, model=model)
+        return jsonify(public)
+    except OSError as exc:
+        return jsonify({"error": f"Failed to save settings: {exc}"}), 500
+
+
+@app.route("/api/ai/settings/test", methods=["POST"])
+def ai_settings_test():
+    try:
+        return jsonify(ai_service.test_connection())
+    except AIServiceError as exc:
+        return _ai_error_response(exc)
+
+
+@app.route("/api/ai/models", methods=["GET"])
+def ai_models():
+    try:
+        return jsonify(ai_service.list_models())
+    except AIServiceError as exc:
+        return _ai_error_response(exc)
+
+
+@app.route("/api/ai/chat", methods=["POST"])
+def ai_chat():
+    body = request.get_json(silent=True) or {}
+    session_id = body.get("session_id")
+    if not session_id:
+        return jsonify({"error": "session_id required"}), 400
+
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    scope = (body.get("scope") or "page").lower()
+    if scope not in ("page", "document"):
+        return jsonify({"error": "scope must be page or document"}), 400
+
+    page_num = int(body.get("page_num", 0))
+    doc = entry["doc"]
+    if scope == "page" and (page_num < 0 or page_num >= len(doc)):
+        return jsonify({"error": "Page out of range"}), 400
+
+    messages = body.get("messages") or []
+    selection_text = (body.get("selection_text") or "").strip() or None
+
+    try:
+        result = ai_service.run_assistant_chat(
+            scope, doc, page_num, messages, selection_text=selection_text
+        )
+        return jsonify(result)
+    except AIServiceError as exc:
+        return _ai_error_response(exc)
+
+
+@app.route("/api/ai/text-action", methods=["POST"])
+def ai_text_action():
+    body = request.get_json(silent=True) or {}
+    action = (body.get("action") or "").strip().lower()
+    text = body.get("text") or ""
+    target_lang = body.get("target_lang") or "English"
+
+    try:
+        return jsonify(ai_service.run_text_action(action, text, target_lang=target_lang))
+    except AIServiceError as exc:
+        return _ai_error_response(exc)
+
+
+@app.route("/api/ai/metadata/suggest", methods=["POST"])
+def ai_metadata_suggest():
+    body = request.get_json(silent=True) or {}
+    session_id = body.get("session_id")
+    if not session_id:
+        return jsonify({"error": "session_id required"}), 400
+
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    try:
+        return jsonify(ai_service.run_metadata_suggest(entry["doc"]))
+    except AIServiceError as exc:
+        return _ai_error_response(exc)
+
+
+@app.route("/api/ai/forms/suggest", methods=["POST"])
+def ai_forms_suggest():
+    body = request.get_json(silent=True) or {}
+    session_id = body.get("session_id")
+    page_num = int(body.get("page_num", 0))
+    fields = body.get("fields") or []
+
+    if not session_id:
+        return jsonify({"error": "session_id required"}), 400
+
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    doc = entry["doc"]
+    if page_num < 0 or page_num >= len(doc):
+        return jsonify({"error": "Page out of range"}), 400
+
+    if not fields:
+        fields = extract_page_widgets(doc[page_num])
+
+    try:
+        return jsonify(ai_service.run_forms_suggest(doc, page_num, fields))
+    except AIServiceError as exc:
+        return _ai_error_response(exc)
+
+
+@app.route("/api/ai/ocr", methods=["POST"])
+def ai_ocr_page():
+    body = request.get_json(silent=True) or {}
+    session_id = body.get("session_id")
+    page_num = int(body.get("page_num", 0))
+
+    if not session_id:
+        return jsonify({"error": "session_id required"}), 400
+
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    doc = entry["doc"]
+    if page_num < 0 or page_num >= len(doc):
+        return jsonify({"error": "Page out of range"}), 400
+
+    page = doc[page_num]
+    rect = page.rect
+
+    ocr_font = normalize_ocr_font_family(body.get("font_family") or body.get("fontFamily"))
+
+    try:
+        image_b64 = render_page_to_png(page, dpi_scale=RENDER_SCALE)
+        blocks = ai_service.run_vision_ocr_with_fallback(image_b64, rect.width, rect.height)
+        lines = extract_ocr_lines_from_blocks(blocks)
+        elements = build_ai_ocr_elements_from_blocks(
+            page, blocks, RENDER_SCALE, font_family=ocr_font
+        )
+        source_pdf_bboxes = get_page_content_image_bboxes(page)
+        if not source_pdf_bboxes:
+            source_pdf_bboxes = [
+                e.get("pdf_bbox")
+                for e in elements
+                if e.get("type") == "rect" and e.get("pdf_bbox")
+            ]
+        full_text = ocr_full_text_from_result(lines, elements, blocks)
+        text_count = sum(1 for e in elements if e.get("type") == "text")
+        return jsonify({
+            "success": True,
+            "text": full_text,
+            "elements": elements,
+            "element_count": text_count,
+            "line_count": len(lines),
+            "block_count": len(blocks) if isinstance(blocks, list) else 0,
+            "source_pdf_bboxes": source_pdf_bboxes,
+            "language": "auto",
+            "source": "ai",
+            "layout": "clean",
+        })
+    except AIServiceError as exc:
+        return _ai_error_response(exc)
+    except Exception as exc:
+        print(f"AI OCR error: {exc}", file=sys.stderr, flush=True)
+        return jsonify({"error": "AI OCR failed", "detail": str(exc)}), 502
 
 
 @app.route("/api/session/<session_id>", methods=["DELETE"])

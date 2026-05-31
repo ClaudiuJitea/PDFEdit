@@ -14,11 +14,16 @@ class App {
         this.pageStates = {};
         this.pageFormStates = {};
         this.thumbnails = {};
+        this._thumbnailRefreshTimer = null;
+        /** Base thumbnail raster height before DPR scaling (sidebar ~144px wide). */
+        this._thumbnailCaptureBaseHeight = 320;
         this.isSaving = false;
         this.isLoading = false;
         this.thumbnailsVisible = true;
         this.selectedFormXref = null;
         this.pendingPageLoad = null;
+        this._aiOcrInFlight = false;
+        this._AI_OCR_FONT_KEY = 'pdfedit-ai-ocr-font';
         this._currentStickyObj = null;
         this.searchResults = [];
         this.searchIndex = 0;
@@ -44,6 +49,7 @@ class App {
 
     async init() {
         this.toolbar.init();
+        this.toolbar.editor = this.editor;
         this._bindElements();
         this.formLayer.init(this.els.canvasWrapper, this.els.formLayer);
         this._bindEvents();
@@ -61,8 +67,36 @@ class App {
         this.formLayer.onFieldChanged = (field) => this._onFormFieldChanged(field);
         this.formLayer._onFieldDelete = (xref) => this._deleteFormField(xref);
         this._attachEditorCallbacks();
+        AISettings.bind();
+        AIAssistant.init();
+        await AISettings.refresh();
+        this.onAiConfiguredChanged(AISettings.configured);
         lucide.createIcons();
         await this._restoreSessionOnInit();
+    }
+
+    onAiConfiguredChanged(configured) {
+        const hasDoc = !!this.sessionId;
+        const enabled = configured && hasDoc;
+        AIAssistant.setEnabled(enabled);
+        const aiOcr = document.getElementById('btn-ai-ocr-page');
+        const metaBtn = document.getElementById('btn-ai-suggest-metadata');
+        const formsBtn = document.getElementById('btn-ai-fill-forms');
+        if (aiOcr) {
+            aiOcr.disabled = !enabled;
+            aiOcr.title = configured
+                ? 'AI OCR: replace page scan with text, or copy text into your own text box'
+                : 'Configure AI Settings first';
+        }
+        if (metaBtn) metaBtn.disabled = !enabled;
+        if (formsBtn) formsBtn.disabled = !enabled;
+        document.querySelectorAll('.ai-text-action-btn').forEach((btn) => {
+            btn.disabled = !enabled;
+        });
+        const translateLang = document.getElementById('ai-translate-lang');
+        const translateLangCustom = document.getElementById('ai-translate-lang-custom');
+        if (translateLang) translateLang.disabled = !enabled;
+        if (translateLangCustom) translateLangCustom.disabled = !enabled;
     }
 
     _attachEditorCallbacks() {
@@ -116,6 +150,9 @@ class App {
         this.editor.onLinkAreaDrawn = (area) => this._onLinkAreaDrawn(area);
         this.editor.onLinkOverlayClicked = (link) => this._selectLinkEntry(link);
         this.editor.onLinkOverlayDoubleClicked = (link) => this._testLinkEntry(link);
+        this.editor.onTextSelectionChanged = (obj) => {
+            this.toolbar.syncTextSelectionProps(obj);
+        };
     }
 
     _bindElements() {
@@ -231,6 +268,18 @@ class App {
             linkListEmpty: document.getElementById('link-list-empty'),
             btnSaveMetadata: document.getElementById('btn-save-metadata'),
             btnSaveBookmarks: document.getElementById('btn-save-bookmarks'),
+            aiOcrFontFamily: document.getElementById('ai-ocr-font-family'),
+            btnAiOcrPage: document.getElementById('btn-ai-ocr-page'),
+            aiOcrModal: document.getElementById('ai-ocr-modal'),
+            aiOcrText: document.getElementById('ai-ocr-text'),
+            aiOcrModalHint: document.getElementById('ai-ocr-modal-hint'),
+            btnAiOcrCancel: document.getElementById('btn-ai-ocr-cancel'),
+            btnAiOcrCopy: document.getElementById('btn-ai-ocr-copy'),
+            btnAiOcrReplace: document.getElementById('btn-ai-ocr-replace'),
+            editorContextAiSection: document.getElementById('context-ai-section'),
+            contextMenuDividerAi: document.getElementById('context-menu-divider-ai'),
+            btnMergeTextBlocks: document.getElementById('btn-merge-text-blocks'),
+            btnContextMergeText: document.getElementById('btn-context-merge-text'),
         };
 
         try {
@@ -242,6 +291,32 @@ class App {
         } catch (_) {
             // ignore storage access errors during startup
         }
+
+        this._initAiOcrFontSelect();
+    }
+
+    _initAiOcrFontSelect() {
+        const select = this.els.aiOcrFontFamily;
+        if (!select) return;
+        try {
+            const saved = localStorage.getItem(this._AI_OCR_FONT_KEY);
+            if (saved && [...select.options].some((o) => o.value === saved)) {
+                select.value = saved;
+            }
+        } catch (_) {
+            // ignore storage access errors
+        }
+        select.addEventListener('change', () => {
+            try {
+                localStorage.setItem(this._AI_OCR_FONT_KEY, select.value);
+            } catch (_) {
+                // ignore storage access errors
+            }
+        });
+    }
+
+    _getAiOcrFontFamily() {
+        return this.els.aiOcrFontFamily?.value || 'Helvetica';
     }
 
     _bindEvents() {
@@ -335,6 +410,57 @@ class App {
         if (this.els.btnOcrPage) {
             this.els.btnOcrPage.addEventListener('click', () => this._ocrCurrentPage());
         }
+        if (this.els.btnAiOcrPage) {
+            this.els.btnAiOcrPage.addEventListener('click', () => this._aiOcrCurrentPage());
+        }
+        if (this.els.aiOcrModal) {
+            this.els.btnAiOcrCancel?.addEventListener('click', () => this._hideAiOcrModal());
+            this.els.aiOcrModal.querySelector('.modal-backdrop')?.addEventListener('click', () => this._hideAiOcrModal());
+            this.els.btnAiOcrCopy?.addEventListener('click', () => this._applyAiOcrKeepImage());
+            this.els.btnAiOcrReplace?.addEventListener('click', () => this._applyAiOcrReplaceImage());
+        }
+        document.getElementById('btn-ai-suggest-metadata')?.addEventListener('click', () => this._aiSuggestMetadata());
+        document.getElementById('btn-ai-fill-forms')?.addEventListener('click', () => this._aiFillForms());
+        document.querySelectorAll('.ai-text-action-btn').forEach((btn) => {
+            btn.addEventListener('click', () => this._aiTextAction(btn.dataset.aiAction));
+        });
+        this._bindAiTranslateLanguage();
+        document.querySelectorAll('.ai-context-action').forEach((btn) => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this._aiTextAction(btn.dataset.aiAction, this._contextMenuTextObjects);
+                this._hideCanvasContextMenu();
+            });
+        });
+        this.els.btnMergeTextBlocks?.addEventListener('click', () => this._mergeSelectedTextBlocks());
+
+        const runContextMerge = (e) => {
+            if (e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            const targets = [
+                ...(this._contextMenuTextObjects || []),
+                ...(this.editor?.getSelectedTextObjects() || []),
+            ];
+            const unique = [...new Set(targets)];
+            this._hideCanvasContextMenu();
+            this._mergeSelectedTextBlocks(unique);
+        };
+
+        if (this.els.btnContextMergeText) {
+            this.els.btnContextMergeText.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            });
+            this.els.btnContextMergeText.addEventListener('click', runContextMerge);
+        }
+
+        this.els.editorContextMenu?.addEventListener('click', (e) => {
+            if (e.target.closest('#btn-context-merge-text')) {
+                runContextMerge(e);
+            }
+        });
         if (this.els.btnDetectTables) {
             this.els.btnDetectTables.addEventListener('click', () => this._detectTablesOnPage());
         }
@@ -746,7 +872,38 @@ class App {
         this.isDirty = true;
         this.dirtyPages.add(this.currentPage);
         this._scheduleDraftPersist();
+        this._scheduleThumbnailRefresh();
         this._updateSaveUnsavedIndicator();
+    }
+
+    _scheduleThumbnailRefresh() {
+        clearTimeout(this._thumbnailRefreshTimer);
+        this._thumbnailRefreshTimer = setTimeout(() => {
+            this._storeThumbnailFromCanvas();
+        }, 350);
+    }
+
+    _getThumbnailCaptureHeight(pageNum = this.currentPage) {
+        const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+        const pageSize = this.pageSizes[pageNum];
+        const canvasH = this.editor?.canvasHeight
+            || (pageSize ? pageSize.height * (this.editor?.pdfScale || 2) : 0);
+        const maxH = Math.round(this._thumbnailCaptureBaseHeight * dpr);
+        return canvasH > 0 ? Math.min(canvasH, maxH) : maxH;
+    }
+
+    _storeThumbnailFromCanvas(pageNum = this.currentPage) {
+        if (pageNum !== this.currentPage || !this.editor?.canvas || this.isLoading) {
+            return;
+        }
+        const dataUrl = this.editor.capturePreviewDataUrl(this._getThumbnailCaptureHeight(pageNum));
+        if (!dataUrl) {
+            return;
+        }
+        this.thumbnails[pageNum] = dataUrl;
+        if (this.thumbnailsVisible) {
+            this._updateThumbnail(pageNum);
+        }
     }
 
     _initStampPresetGrid() {
@@ -1224,6 +1381,9 @@ class App {
         this.els.btnRedo.disabled = true;
 
         this._updateSaveUnsavedIndicator();
+        this.onAiConfiguredChanged(false);
+        AIAssistant.clearHistory();
+        AIAssistant.close();
         this.toolbar.setActiveTool('select');
         this._showContextProperties();
     }
@@ -1300,6 +1460,7 @@ class App {
         this.els.pageCountBadge.style.display = 'flex';
         this._updatePageInfo();
         this._updateUndoRedoButtons();
+        this.onAiConfiguredChanged(AISettings.configured);
         this.toolbar.setActiveTool('select');
         this._toggleThumbnails(true);
         this._persistSessionMeta();
@@ -1383,7 +1544,11 @@ class App {
             this.formLayer.setInteractive(this.toolbar.activeTool === 'forms');
             this.formLayer.syncPosition();
 
-            await this._loadThumbnail(pageNum);
+            this._storeThumbnailFromCanvas(pageNum);
+
+            this.undoStack = [];
+            this.undoIndex = -1;
+            this._seedUndoHistory();
 
         } catch (err) {
             if (preserveCurrentPage) {
@@ -1396,9 +1561,6 @@ class App {
         } finally {
             this.isLoading = false;
             this.isDirty = false;
-            this.undoStack = [];
-            this.undoIndex = -1;
-            this._seedUndoHistory();
             this._updateSaveUnsavedIndicator();
         }
     }
@@ -1448,6 +1610,7 @@ class App {
         if (this.isSaving) return;
 
         const previousPage = this.currentPage;
+        this._storeThumbnailFromCanvas(previousPage);
         if (this.isDirty) {
             this.pageStates[previousPage] = this.editor.toJSON();
             this._syncCurrentPageFormsState();
@@ -1528,11 +1691,23 @@ class App {
         this.els.contextAlignSection.style.display = showPageAlign ? 'block' : 'none';
         this.els.contextMenuDivider.style.display = showPageAlign ? 'block' : 'none';
 
+        const showMerge = textObjects.length >= 2;
+        if (this.els.btnContextMergeText) {
+            this.els.btnContextMergeText.style.display = showMerge ? 'flex' : 'none';
+        }
+
+        const showAi = textObjects.length >= 1 && AISettings.configured;
+        if (this.els.editorContextAiSection) {
+            this.els.editorContextAiSection.style.display = showAi ? 'block' : 'none';
+        }
+        if (this.els.contextMenuDividerAi) {
+            this.els.contextMenuDividerAi.style.display = showAi ? 'block' : 'none';
+        }
+
         menu.style.display = 'block';
 
-        if (typeof lucide !== 'undefined' && !menu.dataset.iconsReady) {
+        if (typeof lucide !== 'undefined') {
             lucide.createIcons({ nodes: [menu] });
-            menu.dataset.iconsReady = '1';
         }
 
         const { innerWidth, innerHeight } = window;
@@ -1622,7 +1797,10 @@ class App {
 
         try {
             const elements = this.editor.getObjects();
-            const deleted_originals = this.editor.getDeletedOriginals();
+            const deleted_originals = [
+                ...this.editor.getDeletedOriginals(),
+                ...this.editor.getOcrRedactAreas(),
+            ];
             const forms = this.formLayer.getForms();
             this.pageFormStates[this.currentPage] = forms;
             const result = await API.savePage(this.sessionId, this.currentPage, elements, deleted_originals, forms);
@@ -1630,6 +1808,8 @@ class App {
             if (result.thumbnail) {
                 this.thumbnails[this.currentPage] = result.thumbnail;
                 this._updateThumbnail(this.currentPage);
+            } else {
+                this._storeThumbnailFromCanvas();
             }
 
             this.editor.clearDeletedOriginals();
@@ -1719,7 +1899,10 @@ class App {
 
     async _saveAllPagesBeforeExport() {
         const elements = this.editor.getObjects();
-        const deleted_originals = this.editor.getDeletedOriginals();
+        const deleted_originals = [
+            ...this.editor.getDeletedOriginals(),
+            ...this.editor.getOcrRedactAreas(),
+        ];
         const forms = this.formLayer.getForms();
         this.pageFormStates[this.currentPage] = forms;
         await API.savePage(this.sessionId, this.currentPage, elements, deleted_originals, forms);
@@ -1738,6 +1921,13 @@ class App {
         }
         this.undoIndex = this.undoStack.length - 1;
         this._updateUndoRedoButtons();
+    }
+
+    _pushUndoSnapshot() {
+        const snapshot = this.editor?.captureUndoSnapshot?.();
+        if (snapshot) {
+            this._pushUndoEntry(snapshot);
+        }
     }
 
     _recordUndoState() {
@@ -1803,13 +1993,17 @@ class App {
         this.toolbar.setActiveTool('select');
         this.editor.activateSelectTool();
 
-        const shapeBtn = document.getElementById('btn-shape-main');
-        const shapeMenu = document.getElementById('shape-dropdown-menu');
-        if (shapeBtn && shapeMenu) {
-            shapeMenu.querySelectorAll('.menu-item').forEach((item) => {
-                item.classList.toggle('active', item.dataset.shape === 'rect');
-            });
-            shapeBtn.dataset.tool = 'rect';
+        if (createdObject) {
+            const shapeMap = { rect: 'rect', ellipse: 'ellipse', star: 'star', line: 'line' };
+            const shape = shapeMap[createdObject._elementType] || (createdObject.type === 'line' ? 'line' : 'rect');
+            const shapeBtn = document.getElementById('btn-shape-main');
+            const shapeMenu = document.getElementById('shape-dropdown-menu');
+            if (shapeBtn && shapeMenu) {
+                shapeMenu.querySelectorAll('.menu-item').forEach((item) => {
+                    item.classList.toggle('active', item.dataset.shape === shape);
+                });
+                shapeBtn.dataset.tool = shape;
+            }
         }
 
         if (createdObject && this.editor.canvas) {
@@ -2107,6 +2301,21 @@ class App {
                     this._markDirty();
                     return;
                 }
+                if (prop === 'textAlign'
+                    && obj.isEditing
+                    && obj.selectionStart !== obj.selectionEnd
+                    && obj.textAlign !== value) {
+                    this._pushUndoSnapshot();
+                    this._suppressUndoRecording = true;
+                    try {
+                        this.editor.alignSelectedLines(obj, value);
+                    } finally {
+                        this._suppressUndoRecording = false;
+                    }
+                    this._pushUndoSnapshot();
+                    this._markDirty();
+                    return;
+                }
                 this._applyTextProp(obj, prop, value);
                 break;
             case 'shape':
@@ -2169,12 +2378,12 @@ class App {
                 break;
             case 'textAlign':
                 obj.set('textAlign', value);
+                if (obj.type === 'textbox' && typeof obj.initDimensions === 'function') {
+                    obj.initDimensions();
+                }
                 break;
             case 'pageAlign':
                 this.editor.alignTextToPageMargin(obj, value);
-                if (value !== 'justify') {
-                    obj.set('textAlign', value);
-                }
                 break;
             case 'lineHeight':
                 obj.set('lineHeight', value);
@@ -2195,11 +2404,7 @@ class App {
                 break;
             }
             case 'textStrokeColor':
-                if (obj.strokeWidth > 0 || document.getElementById('prop-text-stroke-width')?.value > 0) {
-                    obj.set('stroke', value);
-                } else {
-                    obj.set('stroke', value);
-                }
+                obj.set('stroke', value);
                 break;
             case 'textStrokeWidth':
                 obj.set('strokeWidth', value);
@@ -2338,7 +2543,7 @@ class App {
                 obj.set('opacity', value);
                 break;
             case 'stickyColor': {
-                const darkColor = this._darkenStickyColor(value);
+                const darkColor = this.editor._darkenStickyColor(value);
                 obj.set('_stickyColor', value);
                 const children = obj.getObjects();
                 if (children[0]) {
@@ -2357,14 +2562,7 @@ class App {
         }
     }
 
-    _darkenStickyColor(hex) {
-        if (!hex || !hex.startsWith('#') || hex.length < 7) return '#999999';
-        const r = parseInt(hex.slice(1, 3), 16);
-        const g = parseInt(hex.slice(3, 5), 16);
-        const b = parseInt(hex.slice(5, 7), 16);
-        const factor = 0.7;
-        return '#' + [r, g, b].map(c => Math.round(c * factor).toString(16).padStart(2, '0')).join('');
-    }
+
 
     _showStickyPopup(obj) {
         this._hideStickyPopup(true);
@@ -2558,10 +2756,20 @@ class App {
     }
 
     async _loadThumbnail(pageNum) {
+        if (pageNum === this.currentPage && this.editor?.canvas && !this.isLoading) {
+            this._storeThumbnailFromCanvas(pageNum);
+            if (this.thumbnails[pageNum]) {
+                return;
+            }
+        }
+        await this._loadThumbnailFromServer(pageNum);
+    }
+
+    async _loadThumbnailFromServer(pageNum) {
         try {
             const pageData = await API.getPage(this.sessionId, pageNum, { maskEditable: false });
             const canvas = document.createElement('canvas');
-            const maxH = 150;
+            const maxH = this._getThumbnailCaptureHeight(pageNum);
             const scale = maxH / pageData.height;
             canvas.width = pageData.width * scale;
             canvas.height = maxH;
@@ -2888,7 +3096,7 @@ class App {
             this.pageCount = result.page_count;
             this.pageSizes = result.page_sizes || this.pageSizes;
             this._updatePageInfo();
-            this._renderThumbnails();
+            this._loadAllThumbnails();
             this._showToast('PDF merged', 'success');
         } catch (err) {
             this._showToast(err.message, 'error');
@@ -3198,7 +3406,8 @@ class App {
                 bbox: this.selectedLink.bbox,
             };
             if (payload.kind === 'goto') {
-                payload.page = Math.max(0, parseInt(this.els.propLinkPage?.value || '1', 10) - 1);
+                const rawPage = parseInt(this.els.propLinkPage?.value, 10);
+                payload.page = Math.max(0, (Number.isFinite(rawPage) ? rawPage : 1) - 1);
             } else {
                 payload.uri = (this.els.propLinkUri?.value || '').trim();
             }
@@ -3251,7 +3460,12 @@ class App {
         }
         const kind = this.els.propLinkKind?.value || 'uri';
         if (kind === 'goto') {
-            const page = Math.max(0, parseInt(this.els.propLinkPage?.value || '1', 10) - 1);
+            const rawPage = parseInt(this.els.propLinkPage?.value, 10);
+            const page = Math.max(0, (Number.isFinite(rawPage) ? rawPage : 1) - 1);
+            if (page >= this.pageCount) {
+                this._showToast('Target page does not exist', 'error');
+                return;
+            }
             this._goToPage(page);
             return;
         }
@@ -3334,11 +3548,391 @@ class App {
         try {
             this._showToast('Running OCR...', 'success');
             const result = await API.ocrPage(this.sessionId, this.currentPage);
-            if (result.elements?.length) {
+            const count = result.elements?.length || 0;
+            if (count > 0) {
                 await this.editor.loadElements(result.elements);
                 this._recordUndoState();
+                this._showToast(`OCR added ${count} text block(s)`, 'success');
+            } else {
+                this._showToast(
+                    'No text detected. Install Tesseract on the server for scanned pages, or use AI OCR with a vision model.',
+                    'error'
+                );
             }
-            this._showToast('OCR complete — text elements added', 'success');
+        } catch (err) {
+            this._showToast(err.message, 'error');
+        }
+    }
+
+    _aiOcrTextFromResult(result) {
+        let text = (result?.text || '').trim();
+        if (text) return text;
+        const fromElements = (result?.elements || [])
+            .filter((e) => e && e.type === 'text' && e.text)
+            .map((e) => String(e.text).trim())
+            .filter(Boolean);
+        if (fromElements.length) {
+            return fromElements.join('\n');
+        }
+        return '';
+    }
+
+    _setAiOcrBusy(busy) {
+        const btn = this.els.btnAiOcrPage;
+        if (btn) {
+            btn.disabled = busy || !AISettings.configured;
+            btn.setAttribute('aria-busy', busy ? 'true' : 'false');
+        }
+        if (this.els.canvasLoading) {
+            if (busy) {
+                this.els.canvasLoading.style.display = 'flex';
+            } else if (!this.isLoading) {
+                this.els.canvasLoading.style.display = 'none';
+            }
+        }
+    }
+
+    async _aiOcrCurrentPage() {
+        if (!this.sessionId) {
+            console.warn('AI OCR blocked: no session');
+            this._showToast('Open a PDF first', 'error');
+            return;
+        }
+        if (!AISettings.configured) {
+            this._showToast('Configure AI Settings first', 'error');
+            return;
+        }
+        if (this._aiOcrInFlight) {
+            console.warn('AI OCR blocked: already in flight');
+            return;
+        }
+        this._aiOcrInFlight = true;
+        this._setAiOcrBusy(true);
+        try {
+            this._showToast('Running AI OCR… this may take up to a minute.', 'success', 8000);
+            const result = await API.aiOcr(
+                this.sessionId,
+                this.currentPage,
+                this._getAiOcrFontFamily()
+            );
+            const text = this._aiOcrTextFromResult(result);
+            if (!text) {
+                this._showToast(
+                    'AI OCR found no text. Use a vision model in AI Settings (e.g. openai/gpt-4o or google/gemini-2.0-flash-001), then try again.',
+                    'error',
+                    6000
+                );
+                return;
+            }
+            this._aiOcrElements = Array.isArray(result.elements) ? result.elements : [];
+            this._aiOcrSourcePdfBboxes = Array.isArray(result.source_pdf_bboxes)
+                ? result.source_pdf_bboxes
+                : [];
+            this._showAiOcrModal(text);
+        } catch (err) {
+            console.error('AI OCR failed:', err);
+            this._showToast(err.message || 'AI OCR failed', 'error', 6000);
+        } finally {
+            this._aiOcrInFlight = false;
+            this._setAiOcrBusy(false);
+        }
+    }
+
+    _showAiOcrModal(text) {
+        if (!this.els.aiOcrModal || !this.els.aiOcrText) {
+            console.error('AI OCR modal elements missing from DOM');
+            this._showToast('Could not open OCR dialog — reload the page.', 'error');
+            return;
+        }
+        try {
+            this._aiOcrPendingSource = this.editor?.resolveOcrReplaceSource?.() || {
+                kind: 'page',
+                target: null,
+                bounds: null,
+            };
+        } catch (err) {
+            console.warn('resolveOcrReplaceSource failed:', err);
+            this._aiOcrPendingSource = { kind: 'page', target: null, bounds: null };
+        }
+        this.els.aiOcrText.value = text;
+        const isPicture = this._aiOcrPendingSource?.kind === 'image';
+        if (this.els.btnAiOcrReplace) {
+            this.els.btnAiOcrReplace.disabled = false;
+            this.els.btnAiOcrReplace.title = isPicture
+                ? 'Replace the selected picture with a same-size text box'
+                : 'Cover the scanned handwriting and place editable text in the same area';
+        }
+        if (this.els.aiOcrModalHint) {
+            this.els.aiOcrModalHint.textContent = isPicture
+                ? 'Replace source removes the selected picture and puts editable text in a box the same size and position. Keep image copies the text for your own text box.'
+                : 'Replace source adds white masks over the scan and places editable text in that region. Select a picture first to replace only that image. Keep image copies the text for your own text box.';
+        }
+        this.els.aiOcrModal.style.display = 'flex';
+        this.els.aiOcrText.focus();
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons({ nodes: [this.els.aiOcrModal] });
+        }
+    }
+
+    _hideAiOcrModal() {
+        if (this.els.aiOcrModal) {
+            this.els.aiOcrModal.style.display = 'none';
+        }
+        this._aiOcrPendingSource = null;
+        this._aiOcrElements = null;
+        this._aiOcrSourcePdfBboxes = null;
+    }
+
+    _getAiOcrModalText() {
+        return (this.els.aiOcrText?.value || '').trim();
+    }
+
+    async _applyAiOcrKeepImage() {
+        const text = this._getAiOcrModalText();
+        if (!text) {
+            this._showToast('No text to copy', 'error');
+            return;
+        }
+        this.editor.setPendingOcrText(text);
+        let copied = false;
+        try {
+            await navigator.clipboard.writeText(text);
+            copied = true;
+        } catch (_) {
+            // clipboard may be blocked; pending paste still works on next text box
+        }
+        this._hideAiOcrModal();
+        this._showToast(
+            copied
+                ? 'Text copied. Use the Text tool, click where you want it, and paste (or it will be pre-filled).'
+                : 'Text ready. Use the Text tool and click on the page — the recognized text will be inserted.',
+            'success'
+        );
+    }
+
+    async _applyAiOcrReplaceImage() {
+        const text = this._getAiOcrModalText();
+        if (!text) {
+            this._showToast('No text to place', 'error');
+            return;
+        }
+        const source = this._aiOcrPendingSource || this.editor.resolveOcrReplaceSource();
+        if (source.target && this.editor.canvas?.getObjects().includes(source.target)) {
+            source.bounds = this.editor._captureOcrReplaceBounds(source.target);
+        }
+
+        let sourcePdfBboxes = [...(this._aiOcrSourcePdfBboxes || [])];
+        if (!sourcePdfBboxes.length && this.sessionId) {
+            try {
+                const regions = await API.getPageSourceRegions(this.sessionId, this.currentPage);
+                sourcePdfBboxes = regions.pdf_bboxes || [];
+            } catch (err) {
+                console.warn('Could not load page source regions:', err);
+            }
+            if (!sourcePdfBboxes.length) {
+                try {
+                    const data = await API.getPageElements(this.sessionId, this.currentPage);
+                    sourcePdfBboxes = (data.elements || [])
+                        .filter((e) => e.type === 'image' && e.pdf_bbox)
+                        .map((e) => e.pdf_bbox);
+                } catch (err) {
+                    console.warn('Could not load page images:', err);
+                }
+            }
+        }
+
+        this._suppressUndoRecording = true;
+        try {
+            const textbox = await this.editor.applyOcrReplaceSource(source, text, {
+                elements: this._aiOcrElements,
+                sourcePdfBboxes,
+                sessionId: this.sessionId,
+                pageNum: this.currentPage,
+            });
+            if (!textbox) {
+                this._showToast('Could not replace source', 'error');
+                return;
+            }
+            this._hideAiOcrModal();
+            this._recordUndoState();
+            this._markDirty();
+            this.toolbar.showPropertiesForObjects([textbox]);
+            const msg = source.kind === 'image'
+                ? 'Picture replaced with editable text — adjust and Save'
+                : 'Scan removed from page — adjust text and Save to keep changes';
+            this._showToast(msg, 'success');
+        } catch (err) {
+            console.error('AI OCR replace failed:', err);
+            this._showToast(err.message || 'Replace failed', 'error');
+        } finally {
+            this._suppressUndoRecording = false;
+        }
+    }
+
+    _getActiveTextObjects(objects) {
+        const list = objects || (this.editor.canvas ? this.editor.getSelectedTextObjects() : []);
+        return list.filter((o) => this.editor.isTextObject(o));
+    }
+
+    _mergeSelectedTextBlocks(objects) {
+        const texts = this._getActiveTextObjects(objects);
+        if (texts.length < 2) {
+            this._showToast('Select at least two text blocks (Shift+click)', 'error');
+            return;
+        }
+
+        this._suppressUndoRecording = true;
+        let merged;
+        try {
+            merged = this.editor.mergeSelectedTextBlocks(texts);
+        } catch (err) {
+            console.error('Merge text blocks failed:', err);
+            this._showToast(err.message || 'Merge failed', 'error');
+            return;
+        } finally {
+            this._suppressUndoRecording = false;
+        }
+
+        if (!merged) {
+            this._showToast('Nothing to merge', 'error');
+            return;
+        }
+
+        this._recordUndoState();
+        this._markDirty();
+        this._storeThumbnailFromCanvas();
+        this.toolbar.showPropertiesForObjects([merged]);
+        this._showToast('Text blocks merged into one', 'success');
+    }
+
+    _bindAiTranslateLanguage() {
+        const sel = document.getElementById('ai-translate-lang');
+        const custom = document.getElementById('ai-translate-lang-custom');
+        if (!sel) return;
+
+        const syncCustomVisibility = () => {
+            const showCustom = sel.value === '__custom__';
+            if (custom) {
+                custom.style.display = showCustom ? 'block' : 'none';
+                if (showCustom) custom.focus();
+            }
+        };
+
+        sel.addEventListener('change', syncCustomVisibility);
+        syncCustomVisibility();
+    }
+
+    _getAiTranslateTargetLanguage() {
+        const sel = document.getElementById('ai-translate-lang');
+        if (!sel) return 'English';
+        if (sel.tagName === 'SELECT') {
+            if (sel.value === '__custom__') {
+                const custom = document.getElementById('ai-translate-lang-custom')?.value?.trim();
+                return custom || 'English';
+            }
+            return sel.value;
+        }
+        return (sel.value || 'English').trim();
+    }
+
+    async _aiTextAction(action, objects) {
+        if (!AISettings.configured) {
+            this._showToast('Configure AI Settings first', 'error');
+            return;
+        }
+        const textObjects = this._getActiveTextObjects(objects);
+        if (!textObjects.length) {
+            this._showToast('Select a text object first', 'error');
+            return;
+        }
+        if (action === 'translate' && document.getElementById('ai-translate-lang')?.value === '__custom__') {
+            const custom = document.getElementById('ai-translate-lang-custom')?.value?.trim();
+            if (!custom) {
+                this._showToast('Choose a language or type one under Other…', 'error');
+                return;
+            }
+        }
+        const targetLang = this._getAiTranslateTargetLanguage();
+        try {
+            this._showToast('AI processing…', 'success');
+            for (const obj of textObjects) {
+                const original = (obj.text || '').trim();
+                if (!original) continue;
+                const result = await API.aiTextAction({
+                    action,
+                    text: original,
+                    targetLang,
+                });
+                if (result.text) {
+                    obj.set('text', result.text);
+                    obj.setCoords();
+                }
+            }
+            this.editor.canvas.requestRenderAll();
+            this._recordUndoState();
+            this._markDirty();
+            this._showToast('Text updated', 'success');
+        } catch (err) {
+            this._showToast(err.message, 'error');
+        }
+    }
+
+    async _aiSuggestMetadata() {
+        if (!this.sessionId || !AISettings.configured) return;
+        try {
+            this._showToast('Generating metadata suggestions…', 'success');
+            const result = await API.aiSuggestMetadata(this.sessionId);
+            const titleEl = document.getElementById('meta-title');
+            const subjectEl = document.getElementById('meta-subject');
+            const keywordsEl = document.getElementById('meta-keywords');
+            if (titleEl && result.title) titleEl.value = result.title;
+            if (subjectEl && result.subject) subjectEl.value = result.subject;
+            if (keywordsEl && result.keywords) keywordsEl.value = result.keywords;
+            const summaryGroup = document.getElementById('ai-meta-summary-group');
+            const summaryEl = document.getElementById('ai-meta-summary');
+            if (result.summary && summaryGroup && summaryEl) {
+                summaryEl.textContent = result.summary;
+                summaryGroup.style.display = 'block';
+            }
+            this._showToast('Metadata suggestions applied — review and save', 'success');
+        } catch (err) {
+            this._showToast(err.message, 'error');
+        }
+    }
+
+    async _aiFillForms() {
+        if (!this.sessionId || !AISettings.configured) return;
+        const forms = this.formLayer.getForms();
+        if (!forms.length) {
+            this._showToast('No form fields on this page', 'error');
+            return;
+        }
+        try {
+            this._showToast('AI suggesting form values…', 'success');
+            const result = await API.aiSuggestForms({
+                sessionId: this.sessionId,
+                pageNum: this.currentPage,
+                fields: forms,
+            });
+            const suggestions = result.suggestions || {};
+            let applied = 0;
+            forms.forEach((field) => {
+                const key = field.field_name;
+                if (!(key in suggestions)) return;
+                const val = suggestions[key];
+                if (field.widget_kind === 'text' || field.widget_kind === 'choice' || field.widget_kind === 'listbox') {
+                    this.formLayer.updateFieldValue(field.xref, String(val ?? ''), { silent: true });
+                    applied += 1;
+                } else if (field.widget_kind === 'checkbox') {
+                    const checked = /^(true|yes|1|on|checked)$/i.test(String(val));
+                    this.formLayer.updateFieldValue(field.xref, checked, { silent: true });
+                    applied += 1;
+                }
+            });
+            this._syncCurrentPageFormsState();
+            this._showFormProperties();
+            this._markDirty();
+            this._showToast(`Applied ${applied} suggestion(s) — review and save page`, 'success');
         } catch (err) {
             this._showToast(err.message, 'error');
         }
@@ -3374,23 +3968,29 @@ class App {
         }
     }
 
-    _showToast(message, type = 'success') {
+    _showToast(message, type = 'success', durationMs = 3000) {
+        if (!this.els.toastContainer) {
+            console.warn('Toast:', message);
+            return;
+        }
         const toast = document.createElement('div');
         toast.className = `toast ${type}`;
 
         const iconName = type === 'success' ? 'check-circle' : 'alert-circle';
-        toast.innerHTML = `
-            <i data-lucide="${iconName}" class="toast-icon"></i>
-            <span>${message}</span>
-        `;
+        const span = document.createElement('span');
+        span.textContent = message;
+        toast.innerHTML = `<i data-lucide="${iconName}" class="toast-icon"></i>`;
+        toast.appendChild(span);
 
         this.els.toastContainer.appendChild(toast);
-        lucide.createIcons();
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons({ nodes: [toast] });
+        }
 
         setTimeout(() => {
             toast.classList.add('removing');
             setTimeout(() => toast.remove(), 250);
-        }, 3000);
+        }, durationMs);
     }
 }
 

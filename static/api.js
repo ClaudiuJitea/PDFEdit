@@ -1,3 +1,12 @@
+function apiErrorMessage(body, fallback) {
+    const msg = (body && body.error) || fallback;
+    const detail = body && body.detail;
+    if (detail && !String(msg).includes(detail)) {
+        return `${msg} (${detail})`;
+    }
+    return msg;
+}
+
 const API = {
     baseUrl: '/api',
 
@@ -61,6 +70,28 @@ const API = {
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({ error: 'Failed to load page' }));
             throw new Error(err.error || 'Failed to load page');
+        }
+        return resp.json();
+    },
+
+    async getPageSourceRegions(sessionId, pageNum) {
+        const resp = await fetch(`${this.baseUrl}/page/${sessionId}/${pageNum}/source-regions`);
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'Failed to load source regions' }));
+            throw new Error(err.error || 'Failed to load source regions');
+        }
+        return resp.json();
+    },
+
+    async getPageMaskedPreview(sessionId, pageNum, pdfBboxes) {
+        const resp = await fetch(`${this.baseUrl}/page/${sessionId}/${pageNum}/masked-preview`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pdf_bboxes: pdfBboxes }),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'Failed to refresh page preview' }));
+            throw new Error(err.error || 'Failed to refresh page preview');
         }
         return resp.json();
     },
@@ -259,7 +290,7 @@ const API = {
         });
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({ error: 'OCR failed' }));
-            throw new Error(err.error || 'OCR failed');
+            throw new Error(apiErrorMessage(err, 'OCR failed'));
         }
         return resp.json();
     },
@@ -383,6 +414,142 @@ const API = {
             method: 'DELETE',
         });
         return resp.json();
+    },
+
+    async getAiSettings() {
+        const resp = await fetch(`${this.baseUrl}/ai/settings`);
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'Failed to load AI settings' }));
+            throw new Error(err.error || 'Failed to load AI settings');
+        }
+        return resp.json();
+    },
+
+    async saveAiSettings({ apiKey, model, settingsToken } = {}) {
+        const headers = { 'Content-Type': 'application/json' };
+        if (settingsToken) headers['X-AI-Settings-Token'] = settingsToken;
+        const body = {};
+        if (apiKey) body.api_key = apiKey;
+        if (model) body.model = model;
+        const resp = await fetch(`${this.baseUrl}/ai/settings`, {
+            method: 'PUT',
+            headers,
+            body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'Failed to save AI settings' }));
+            throw new Error(err.error || 'Failed to save AI settings');
+        }
+        return resp.json();
+    },
+
+    async testAiSettings() {
+        const resp = await fetch(`${this.baseUrl}/ai/settings/test`, { method: 'POST' });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'Connection test failed' }));
+            throw new Error(err.error || 'Connection test failed');
+        }
+        return resp.json();
+    },
+
+    async listAiModels() {
+        const resp = await fetch(`${this.baseUrl}/ai/models`);
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'Failed to load models' }));
+            throw new Error(err.error || 'Failed to load models');
+        }
+        return resp.json();
+    },
+
+    async aiChat({ sessionId, pageNum, scope, messages, selectionText }) {
+        const resp = await fetch(`${this.baseUrl}/ai/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                session_id: sessionId,
+                page_num: pageNum,
+                scope,
+                messages,
+                selection_text: selectionText || undefined,
+            }),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'AI chat failed' }));
+            throw new Error(err.error || 'AI chat failed');
+        }
+        return resp.json();
+    },
+
+    async aiTextAction({ action, text, targetLang }) {
+        const resp = await fetch(`${this.baseUrl}/ai/text-action`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action, text, target_lang: targetLang }),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'AI text action failed' }));
+            throw new Error(err.error || 'AI text action failed');
+        }
+        return resp.json();
+    },
+
+    async aiSuggestMetadata(sessionId) {
+        const resp = await fetch(`${this.baseUrl}/ai/metadata/suggest`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId }),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'Metadata suggestion failed' }));
+            throw new Error(err.error || 'Metadata suggestion failed');
+        }
+        return resp.json();
+    },
+
+    async aiSuggestForms({ sessionId, pageNum, fields }) {
+        const resp = await fetch(`${this.baseUrl}/ai/forms/suggest`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                session_id: sessionId,
+                page_num: pageNum,
+                fields,
+            }),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'Form suggestion failed' }));
+            throw new Error(err.error || 'Form suggestion failed');
+        }
+        return resp.json();
+    },
+
+    async _readJsonResponse(resp, fallbackError) {
+        const raw = await resp.text();
+        if (!raw) {
+            return { error: fallbackError };
+        }
+        try {
+            return JSON.parse(raw);
+        } catch {
+            return { error: fallbackError, detail: raw.slice(0, 300) };
+        }
+    },
+
+    async aiOcr(sessionId, pageNum, fontFamily = 'Helvetica') {
+        const resp = await fetch(`${this.baseUrl}/ai/ocr`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                session_id: sessionId,
+                page_num: pageNum,
+                font_family: fontFamily,
+            }),
+        });
+        const data = await this._readJsonResponse(resp, 'AI OCR failed');
+        if (!resp.ok) {
+            throw new Error(apiErrorMessage(data, 'AI OCR failed'));
+        }
+        return data;
     },
 };
 

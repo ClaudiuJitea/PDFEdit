@@ -46,12 +46,22 @@ class Toolbar {
         document.getElementById('prop-underline').addEventListener('click', () => this._toggleStyle('underline'));
         document.getElementById('prop-strikethrough').addEventListener('click', () => this._toggleStyle('strikethrough'));
 
-        document.querySelectorAll('.prop-align-btn').forEach((btn) => {
+        document.querySelectorAll('.prop-text-align-btn').forEach((btn) => {
             btn.addEventListener('click', () => {
-                document.querySelectorAll('.prop-align-btn').forEach((b) => b.classList.remove('active'));
+                if (this.onPropertyChange) {
+                    this.onPropertyChange('text', 'textAlign', btn.dataset.textAlign);
+                }
+                const active = this.editor?.getActiveObject?.();
+                if (active) this.syncTextAlignButtons(active);
+            });
+        });
+
+        document.querySelectorAll('.prop-page-align-btn').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.prop-page-align-btn').forEach((b) => b.classList.remove('active'));
                 btn.classList.add('active');
                 if (this.onPropertyChange) {
-                    this.onPropertyChange('text', 'pageAlign', btn.dataset.align);
+                    this.onPropertyChange('text', 'pageAlign', btn.dataset.pageAlign);
                 }
             });
         });
@@ -173,6 +183,28 @@ class Toolbar {
         });
         document.getElementById('prop-send-back').addEventListener('click', () => {
             if (this.onPropertyChange) this.onPropertyChange('image', 'sendBack', true);
+        });
+
+        // Prevent focus loss / blur on the active text box when clicking styling, case, or alignment buttons
+        const preventBlurButtons = [
+            'prop-bold', 'prop-italic', 'prop-underline', 'prop-strikethrough',
+            'prop-text-shadow', 'prop-clear-text-bg', 'prop-clear-text-stroke'
+        ];
+        preventBlurButtons.forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.addEventListener('mousedown', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                });
+            }
+        });
+
+        document.querySelectorAll('.prop-text-align-btn, .prop-page-align-btn, .prop-case-btn, .prop-chip, [data-step-target]').forEach((btn) => {
+            btn.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            });
         });
     }
 
@@ -481,6 +513,36 @@ class Toolbar {
         });
     }
 
+    syncTextSelectionProps(obj) {
+        if (!obj || !this.editor) return;
+
+        const styles = typeof this.editor.getTextSelectionStyles === 'function'
+            ? this.editor.getTextSelectionStyles(obj)
+            : {};
+
+        if (styles.bold !== undefined) {
+            document.getElementById('prop-bold').classList.toggle('active', styles.bold);
+        }
+        if (styles.italic !== undefined) {
+            document.getElementById('prop-italic').classList.toggle('active', styles.italic);
+        }
+        if (styles.underline !== undefined) {
+            document.getElementById('prop-underline').classList.toggle('active', styles.underline);
+        }
+        if (styles.linethrough !== undefined) {
+            document.getElementById('prop-strikethrough').classList.toggle('active', styles.linethrough);
+        }
+
+        this.syncTextAlignButtons(obj);
+    }
+
+    syncTextAlignButtons(obj) {
+        const align = obj?.textAlign || 'left';
+        document.querySelectorAll('.prop-text-align-btn').forEach((btn) => {
+            btn.classList.toggle('active', btn.dataset.textAlign === align);
+        });
+    }
+
     showPropertiesForObjects(objects) {
         if (!objects || objects.length === 0) {
             this._hideAllProps();
@@ -489,10 +551,24 @@ class Toolbar {
         }
 
         if (objects.length > 1) {
+            const textObjects = objects.filter((o) => this.editor?.isTextObject(o));
+            if (textObjects.length >= 2) {
+                this._hideAllProps();
+                const panel = document.getElementById('props-multi-text');
+                const countEl = document.getElementById('props-multi-text-count');
+                if (panel) panel.style.display = 'block';
+                if (countEl) {
+                    countEl.textContent = `${textObjects.length} text blocks selected`;
+                }
+                return;
+            }
             this._hideAllProps();
-            document.getElementById('props-empty').style.display = 'flex';
-            document.getElementById('props-empty').querySelector('p').textContent =
-                `${objects.length} objects selected`;
+            const empty = document.getElementById('props-empty');
+            const msg = document.getElementById('props-empty-message');
+            if (empty) empty.style.display = 'flex';
+            if (msg) {
+                msg.textContent = `${objects.length} objects selected`;
+            }
             return;
         }
 
@@ -602,6 +678,8 @@ class Toolbar {
         document.getElementById('props-empty').style.display = 'none';
         document.getElementById('props-brush').style.display = 'none';
         document.getElementById('props-text').style.display = 'none';
+        const multiText = document.getElementById('props-multi-text');
+        if (multiText) multiText.style.display = 'none';
         document.getElementById('props-shape').style.display = 'none';
         document.getElementById('props-image').style.display = 'none';
         document.getElementById('props-sticky').style.display = 'none';
@@ -857,12 +935,14 @@ class Toolbar {
         document.getElementById('prop-underline').classList.toggle('active', obj.underline === true);
         document.getElementById('prop-strikethrough').classList.toggle('active', obj.linethrough === true);
 
-        const align = this.editor?.getObjectPageAlign
+        const pageAlign = this.editor?.getObjectPageAlign
             ? this.editor.getObjectPageAlign(obj)
-            : (obj.textAlign || 'left');
-        document.querySelectorAll('.prop-align-btn').forEach((btn) => {
-            btn.classList.toggle('active', btn.dataset.align === align);
+            : 'left';
+        document.querySelectorAll('.prop-page-align-btn').forEach((btn) => {
+            btn.classList.toggle('active', btn.dataset.pageAlign === pageAlign);
         });
+
+        this.syncTextAlignButtons(obj);
 
         const textCase = obj._textCase || 'none';
         document.querySelectorAll('.prop-case-btn').forEach((btn) => {
@@ -950,8 +1030,8 @@ class Toolbar {
     showEmptyState(message = 'Select an element to edit its properties') {
         this._hideAllProps();
         document.getElementById('props-empty').style.display = 'flex';
-        document.getElementById('props-empty').querySelector('p').textContent =
-            message;
+        const msg = document.getElementById('props-empty-message');
+        if (msg) msg.textContent = message;
     }
 
     reset() {

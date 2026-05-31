@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Great+Vibes&family=Alex+Brush&family=Satisfy&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=1.0.9">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=1.0.10">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
@@ -61,7 +61,7 @@
                         <i data-lucide="book-open" class="btn-icon"></i>
                         <span>Document</span>
                     </button>
-                    <button id="btn-close" class="top-btn" title="Close document (Ctrl+W)" disabled>
+                    <button id="btn-close" class="top-btn top-btn-danger" title="Close document (Ctrl+W)" disabled>
                         <i data-lucide="file-x" class="btn-icon"></i>
                         <span>Close</span>
                     </button>
@@ -78,6 +78,13 @@
                 <span id="page-count-badge" class="page-count" style="display:none">
                     <span id="page-count-text">0 pages</span>
                 </span>
+                <button id="btn-ai-assistant" class="top-btn" title="AI Assistant" disabled>
+                    <i data-lucide="sparkles" class="btn-icon"></i>
+                    <span>AI</span>
+                </button>
+                <button id="btn-ai-settings" class="top-btn icon-only" title="AI Settings (OpenRouter)">
+                    <i data-lucide="settings" class="btn-icon"></i>
+                </button>
                 <button id="btn-theme" class="top-btn icon-only" title="Toggle theme">
                     <i data-lucide="sun" class="btn-icon theme-icon-light"></i>
                     <i data-lucide="moon" class="btn-icon theme-icon-dark"></i>
@@ -291,7 +298,19 @@
             <aside id="properties-panel" class="properties-panel">
                 <div id="props-empty" class="props-empty">
                     <i data-lucide="mouse-pointer-click" class="props-empty-icon"></i>
-                    <p>Select an element to edit its properties</p>
+                    <p id="props-empty-message">Select an element to edit its properties</p>
+                </div>
+
+                <div id="props-multi-text" class="props-section" style="display:none">
+                    <h3 class="props-title">Multiple text blocks</h3>
+                    <p id="props-multi-text-count" class="form-summary-selected">0 blocks selected</p>
+                    <div class="prop-group">
+                        <button id="btn-merge-text-blocks" class="secondary-btn" type="button" title="Combine into one editable text box">
+                            <i data-lucide="merge" class="btn-icon-sm"></i>
+                            Merge into one block
+                        </button>
+                    </div>
+                    <p class="form-summary-selected">Tip: Shift+click to select several OCR lines, then merge.</p>
                 </div>
 
                 <div id="props-brush" class="props-section" style="display:none">
@@ -401,18 +420,35 @@
                         </div>
                     </div>
                     <div class="prop-group">
-                        <label class="prop-label">Align to page</label>
-                        <div class="prop-btn-group prop-btn-group-wide" id="prop-text-align-group">
-                            <button class="prop-toggle prop-align-btn active" type="button" data-align="left" title="Align block to left page margin">
+                        <label class="prop-label">Text alignment</label>
+                        <div class="prop-btn-group prop-btn-group-wide" id="prop-inbox-text-align-group">
+                            <button class="prop-toggle prop-text-align-btn active" type="button" data-text-align="left" title="Align all text to the left inside the box (select the box, not text inside it)">
                                 <span class="align-icon align-left"></span>
                             </button>
-                            <button class="prop-toggle prop-align-btn" type="button" data-align="center" title="Align block to page center">
+                            <button class="prop-toggle prop-text-align-btn" type="button" data-text-align="center" title="Center all text inside the box">
                                 <span class="align-icon align-center"></span>
                             </button>
-                            <button class="prop-toggle prop-align-btn" type="button" data-align="right" title="Align block to right page margin">
+                            <button class="prop-toggle prop-text-align-btn" type="button" data-text-align="right" title="Align all text to the right inside the box">
                                 <span class="align-icon align-right"></span>
                             </button>
-                            <button class="prop-toggle prop-align-btn" type="button" data-align="justify" title="Stretch text across page width">
+                            <button class="prop-toggle prop-text-align-btn" type="button" data-text-align="justify" title="Justify all lines inside the box">
+                                <span class="align-icon align-justify"></span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Align to page</label>
+                        <div class="prop-btn-group prop-btn-group-wide" id="prop-page-align-group">
+                            <button class="prop-toggle prop-page-align-btn active" type="button" data-page-align="left" title="Move text block to left page margin">
+                                <span class="align-icon align-left"></span>
+                            </button>
+                            <button class="prop-toggle prop-page-align-btn" type="button" data-page-align="center" title="Move text block to page center">
+                                <span class="align-icon align-center"></span>
+                            </button>
+                            <button class="prop-toggle prop-page-align-btn" type="button" data-page-align="right" title="Move text block to right page margin">
+                                <span class="align-icon align-right"></span>
+                            </button>
+                            <button class="prop-toggle prop-page-align-btn" type="button" data-page-align="justify" title="Stretch text block across page width">
                                 <span class="align-icon align-justify"></span>
                             </button>
                         </div>
@@ -530,6 +566,53 @@
                                 <button class="prop-chip prop-chip-rotation" type="button" data-value="180"><span class="rotation-glyph rotate-180">A</span><span>180°</span></button>
                                 <button class="prop-chip prop-chip-rotation" type="button" data-value="270"><span class="rotation-glyph rotate-270">A</span><span>270°</span></button>
                             </div>
+                        </div>
+                    </div>
+                    <p class="props-subsection-label">AI (OpenRouter)</p>
+                    <div class="prop-group ai-text-actions" id="ai-text-actions-group">
+                        <div class="ai-action-grid">
+                            <button type="button" class="secondary-btn ai-text-action-btn" data-ai-action="rewrite" disabled>Rewrite</button>
+                            <button type="button" class="secondary-btn ai-text-action-btn" data-ai-action="grammar" disabled>Fix grammar</button>
+                            <button type="button" class="secondary-btn ai-text-action-btn" data-ai-action="shorten" disabled>Shorten</button>
+                            <button type="button" class="secondary-btn ai-text-action-btn" data-ai-action="expand" disabled>Expand</button>
+                        </div>
+                        <div class="prop-group" style="margin-top:8px">
+                            <label class="prop-label" for="ai-translate-lang">Translate to</label>
+                            <div class="prop-row">
+                                <select id="ai-translate-lang" class="prop-select flex-1" disabled>
+                                    <option value="English">English</option>
+                                    <option value="Spanish">Spanish</option>
+                                    <option value="French">French</option>
+                                    <option value="German">German</option>
+                                    <option value="Italian">Italian</option>
+                                    <option value="Portuguese">Portuguese</option>
+                                    <option value="Dutch">Dutch</option>
+                                    <option value="Polish">Polish</option>
+                                    <option value="Romanian">Romanian</option>
+                                    <option value="Russian">Russian</option>
+                                    <option value="Chinese (Simplified)">Chinese (Simplified)</option>
+                                    <option value="Chinese (Traditional)">Chinese (Traditional)</option>
+                                    <option value="Japanese">Japanese</option>
+                                    <option value="Korean">Korean</option>
+                                    <option value="Arabic">Arabic</option>
+                                    <option value="Hindi">Hindi</option>
+                                    <option value="Turkish">Turkish</option>
+                                    <option value="Ukrainian">Ukrainian</option>
+                                    <option value="Czech">Czech</option>
+                                    <option value="Swedish">Swedish</option>
+                                    <option value="Danish">Danish</option>
+                                    <option value="Norwegian">Norwegian</option>
+                                    <option value="Finnish">Finnish</option>
+                                    <option value="Greek">Greek</option>
+                                    <option value="Hebrew">Hebrew</option>
+                                    <option value="Vietnamese">Vietnamese</option>
+                                    <option value="Thai">Thai</option>
+                                    <option value="Indonesian">Indonesian</option>
+                                    <option value="__custom__">Other…</option>
+                                </select>
+                                <button type="button" class="secondary-btn ai-text-action-btn" data-ai-action="translate" disabled>Translate</button>
+                            </div>
+                            <input type="text" id="ai-translate-lang-custom" class="prop-input" placeholder="Type language (e.g. Hungarian)" style="display:none; margin-top:6px" disabled>
                         </div>
                     </div>
                 </div>
@@ -804,9 +887,28 @@
                                 <i data-lucide="image" class="btn-icon-sm"></i>
                                 Export PNG
                             </button>
-                            <button id="btn-ocr-page" class="secondary-btn" title="OCR scanned page text">
+                            <button id="btn-ocr-page" class="secondary-btn" title="OCR scanned page text (Tesseract)">
                                 <i data-lucide="scan-text" class="btn-icon-sm"></i>
                                 OCR Page
+                            </button>
+                            <div class="prop-group ai-ocr-font-group">
+                                <label class="prop-label" for="ai-ocr-font-family">AI OCR font</label>
+                                <select id="ai-ocr-font-family" class="prop-select" title="Font used for AI OCR text boxes">
+                                    <option value="Helvetica">Helvetica</option>
+                                    <option value="Times New Roman">Times New Roman</option>
+                                    <option value="Courier New">Courier New</option>
+                                    <option value="Arial">Arial</option>
+                                    <option value="Georgia">Georgia</option>
+                                    <option value="Verdana">Verdana</option>
+                                    <option value="Trebuchet MS">Trebuchet MS</option>
+                                    <option value="Palatino">Palatino</option>
+                                    <option value="Garamond">Garamond</option>
+                                    <option value="Comic Sans MS">Comic Sans MS</option>
+                                </select>
+                            </div>
+                            <button id="btn-ai-ocr-page" class="secondary-btn" title="AI OCR: replace page scan with text, or copy into your own text box" disabled>
+                                <i data-lucide="sparkles" class="btn-icon-sm"></i>
+                                AI OCR
                             </button>
                             <button id="btn-detect-tables" class="secondary-btn" title="Detect tables on page">
                                 <i data-lucide="table" class="btn-icon-sm"></i>
@@ -929,6 +1031,16 @@
                         <input type="text" id="meta-keywords" class="prop-input">
                     </div>
                     <div class="prop-group">
+                        <button id="btn-ai-suggest-metadata" class="secondary-btn" type="button" disabled>
+                            <i data-lucide="sparkles" class="btn-icon-sm"></i>
+                            Suggest Metadata (AI)
+                        </button>
+                    </div>
+                    <div class="prop-group" id="ai-meta-summary-group" style="display:none">
+                        <label class="prop-label">AI Summary</label>
+                        <p id="ai-meta-summary" class="form-summary-selected"></p>
+                    </div>
+                    <div class="prop-group">
                         <button id="btn-save-metadata" class="secondary-btn" type="button">Save Metadata</button>
                     </div>
                     <div class="prop-group">
@@ -970,6 +1082,12 @@
                                 List Box
                             </button>
                         </div>
+                    </div>
+                    <div class="prop-group">
+                        <button id="btn-ai-fill-forms" class="secondary-btn" type="button" disabled>
+                            <i data-lucide="sparkles" class="btn-icon-sm"></i>
+                            Fill with AI
+                        </button>
                     </div>
                     <div class="prop-group">
                         <label class="prop-label">Page Fields</label>
@@ -1066,6 +1184,30 @@
                     <button id="btn-unsaved-cancel" class="modal-btn cancel" type="button">Cancel</button>
                     <button id="btn-unsaved-discard" class="modal-btn discard" type="button">Discard changes</button>
                     <button id="btn-unsaved-save" class="modal-btn confirm" type="button">Save and continue</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- AI OCR Results Modal -->
+        <div id="ai-ocr-modal" class="modal modal-ai-ocr" style="display:none">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content modal-content-wide">
+                <h2 class="modal-title">AI OCR — extracted text</h2>
+                <p id="ai-ocr-modal-hint" class="form-summary-selected">
+                    Replace source turns the page scan (or a selected picture) into an editable text box the same size. Keep image copies the text so you can place your own box.
+                </p>
+                <div class="prop-group">
+                    <label class="prop-label" for="ai-ocr-text">Recognized text</label>
+                    <textarea id="ai-ocr-text" class="prop-input ai-ocr-textarea" rows="10" spellcheck="true"></textarea>
+                </div>
+                <div class="modal-actions modal-actions-stack">
+                    <button id="btn-ai-ocr-cancel" class="modal-btn cancel" type="button">Cancel</button>
+                    <button id="btn-ai-ocr-copy" class="modal-btn confirm secondary-outline" type="button" title="Keep the image; copy text for your own text box">
+                        Keep image — copy text
+                    </button>
+                    <button id="btn-ai-ocr-replace" class="modal-btn confirm" type="button" title="Replace the page scan or selected picture with a same-size text box">
+                        Replace source
+                    </button>
                 </div>
             </div>
         </div>
@@ -1200,6 +1342,74 @@
             </div>
         </div>
 
+        <!-- AI Settings Modal -->
+        <div id="ai-settings-modal" class="modal" style="display:none">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content">
+                <h2 class="modal-title">AI Settings (OpenRouter)</h2>
+                <p class="form-summary-selected">API key is stored on the server only, never in your browser.</p>
+                <div id="ai-settings-env-note" class="prop-group" style="display:none">
+                    <p class="form-summary-selected">Some values are set via environment variables and override saved settings.</p>
+                </div>
+                <div class="prop-group">
+                    <label class="prop-label" for="ai-api-key">API Key</label>
+                    <input type="password" id="ai-api-key" class="prop-input" autocomplete="off" placeholder="Leave blank to keep existing key">
+                    <p id="ai-key-preview" class="form-summary-selected"></p>
+                </div>
+                <div class="prop-group">
+                    <label class="prop-label" for="ai-model-select">Model</label>
+                    <select id="ai-model-select" class="prop-select">
+                        <option value="">Loading models…</option>
+                    </select>
+                </div>
+                <div class="prop-group">
+                    <label class="prop-label" for="ai-model-custom">Custom model ID</label>
+                    <input type="text" id="ai-model-custom" class="prop-input" placeholder="e.g. openai/gpt-4o-mini">
+                </div>
+                <div class="prop-group">
+                    <label class="prop-label" for="ai-settings-token">Settings token (optional)</label>
+                    <input type="password" id="ai-settings-token" class="prop-input" autocomplete="off" placeholder="Required if server sets AI_SETTINGS_TOKEN">
+                </div>
+                <p class="form-summary-selected">
+                    <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer">Get an API key at openrouter.ai</a>
+                </p>
+                <div class="modal-actions">
+                    <button id="btn-ai-settings-cancel" class="modal-btn cancel" type="button">Cancel</button>
+                    <button id="btn-ai-settings-test" class="modal-btn" type="button">Test</button>
+                    <button id="btn-ai-settings-save" class="modal-btn confirm" type="button">Save</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- AI Assistant Panel -->
+        <aside id="ai-panel" class="ai-panel" style="display:none" aria-label="AI Assistant">
+            <div class="ai-panel-header">
+                <h2 class="ai-panel-title">AI Assistant</h2>
+                <button id="btn-ai-panel-close" class="icon-btn-sm" type="button" title="Close">
+                    <i data-lucide="x" class="btn-icon-sm"></i>
+                </button>
+            </div>
+            <div class="ai-panel-toolbar">
+                <label class="ai-scope-label">
+                    <input type="radio" name="ai-scope" value="page" checked> This page
+                </label>
+                <label class="ai-scope-label">
+                    <input type="radio" name="ai-scope" value="document"> Whole document
+                </label>
+            </div>
+            <div class="ai-quick-actions">
+                <button type="button" class="ai-quick-btn" data-ai-prompt="Summarize this document.">Summarize</button>
+                <button type="button" class="ai-quick-btn" data-ai-prompt="List the key points as bullet points.">Key points</button>
+                <button type="button" class="ai-quick-btn" data-ai-prompt="Find dates, names, and important numbers mentioned.">Find details</button>
+            </div>
+            <div id="ai-chat-messages" class="ai-chat-messages"></div>
+            <div class="ai-chat-input-row">
+                <textarea id="ai-chat-input" class="ai-chat-input" rows="2" placeholder="Ask about this PDF…"></textarea>
+                <button id="btn-ai-chat-send" class="modal-btn confirm" type="button" disabled>Send</button>
+            </div>
+            <p id="ai-chat-status" class="ai-chat-status"></p>
+        </aside>
+
         <!-- Toast Container -->
         <div id="toast-container" class="toast-container"></div>
 
@@ -1235,13 +1445,33 @@
                         <i data-lucide="align-center-vertical" class="btn-icon-sm"></i>
                         <span>Middle</span>
                     </button>
-                    <button type="button" class="context-align-btn" data-page-align="bottom" title="Align bottom edges to bottom margin">
-                        <i data-lucide="align-end-vertical" class="btn-icon-sm"></i>
-                        <span>Bottom</span>
-                    </button>
-                </div>
+                            <button type="button" class="context-align-btn" data-page-align="bottom" title="Align bottom edges to bottom margin">
+                                <i data-lucide="align-end-vertical" class="btn-icon-sm"></i>
+                                <span>Bottom</span>
+                            </button>
+                        </div>
+                        <button type="button" id="btn-context-merge-text" class="context-menu-item context-merge-btn" style="display:none" title="Combine selected text into one box">
+                            <i data-lucide="git-merge" class="btn-icon-sm"></i>
+                            <span>Merge into one block</span>
+                        </button>
+                    </div>
+            <div id="context-ai-section" class="context-menu-section" style="display:none">
+                <span class="context-menu-label">AI text</span>
+                <button type="button" class="context-menu-item ai-context-action" data-ai-action="rewrite">
+                    <i data-lucide="sparkles" class="btn-icon-sm"></i>
+                    <span>Rewrite</span>
+                </button>
+                <button type="button" class="context-menu-item ai-context-action" data-ai-action="grammar">
+                    <i data-lucide="spell-check" class="btn-icon-sm"></i>
+                    <span>Fix grammar</span>
+                </button>
+                <button type="button" class="context-menu-item ai-context-action" data-ai-action="translate">
+                    <i data-lucide="languages" class="btn-icon-sm"></i>
+                    <span>Translate</span>
+                </button>
             </div>
             <div id="context-menu-divider" class="context-menu-divider" style="display:none"></div>
+            <div id="context-menu-divider-ai" class="context-menu-divider" style="display:none"></div>
             <button id="btn-context-delete" type="button" class="context-menu-item context-menu-item-danger" title="Delete selected objects">
                 <i data-lucide="trash-2" class="btn-icon-sm"></i>
                 <span>Delete</span>
@@ -1298,12 +1528,14 @@
         });
     })();
     </script>
-    <script src="{{ url_for('static', filename='api.js') }}?v=1.0.9"></script>
+    <script src="{{ url_for('static', filename='api.js') }}?v=1.0.11"></script>
     <script src="{{ url_for('static', filename='stamps.js') }}?v=2.0.2"></script>
-    <script src="{{ url_for('static', filename='editor.js') }}?v=1.0.16"></script>
+    <script src="{{ url_for('static', filename='editor.js') }}?v=1.0.22"></script>
     <script src="{{ url_for('static', filename='forms.js') }}?v=1.0.5"></script>
-    <script src="{{ url_for('static', filename='toolbar.js') }}?v=1.0.9"></script>
+    <script src="{{ url_for('static', filename='toolbar.js') }}?v=1.0.10"></script>
     <script src="{{ url_for('static', filename='signature.js') }}?v=1.0.5"></script>
-    <script src="{{ url_for('static', filename='app.js') }}?v=1.0.10"></script>
+    <script src="{{ url_for('static', filename='ai-settings.js') }}?v=1.0.0"></script>
+    <script src="{{ url_for('static', filename='ai-assistant.js') }}?v=1.0.0"></script>
+    <script src="{{ url_for('static', filename='app.js') }}?v=1.0.18"></script>
 </body>
 </html>

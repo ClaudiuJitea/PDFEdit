@@ -131,20 +131,28 @@ graph TD
 ```
 PDFEdit/
 ├── app.py                # Flask server & PDF structural engines
+├── ai_service.py         # OpenRouter client (chat, OCR, metadata, forms)
+├── ai_settings.py        # Server-side API key & model configuration
+├── session_storage.py    # data/unsaved and data/saved session layout
 ├── requirements.txt      # Python package requirements
 ├── assets/
 │   └── banner.png        # Brand mockup banner image
+├── data/
+│   ├── unsaved/          # Working sessions (document.pdf, meta.json, drafts.json)
+│   └── saved/            # Committed saves and export archives
 ├── static/
 │   ├── api.js            # Unified asynchronous API controller
 │   ├── app.js            # Global UI bindings, state managers & shortcuts
 │   ├── editor.js         # Canvas rendering layer (Fabric.js engine)
+│   ├── ai-assistant.js   # Document Q&A chat panel
+│   ├── ai-settings.js    # OpenRouter settings modal
 │   ├── forms.js          # Interactive AcroForm rendering overlays
 │   ├── signature.js      # Signature / Initials canvas pad & profiles drawer
+│   ├── stamps.js         # Stamp presets and canvas rendering
 │   ├── toolbar.js        # Dynamic property controllers & tools dropdowns
 │   └── style.css         # UI design system tokens (light / dark modes)
 ├── templates/
 │   └── index.html        # Single Page Application core frame
-├── sessions_db.json      # Dynamic session metadata logs
 ├── .gitignore            # Git exclusion rules
 └── README.md             # Product documentation
 ```
@@ -225,6 +233,44 @@ python app.py
 
 ---
 
+## AI (OpenRouter)
+
+PDFEdit can use [OpenRouter](https://openrouter.ai/) for document Q&A, text rewriting, metadata suggestions, form filling, and vision-based OCR. **Your API key is stored on the server only** (in `data/ai_settings.json` or environment variables)—never in the browser.
+
+### Configure
+
+1. Get an API key from [openrouter.ai/keys](https://openrouter.ai/keys).
+2. In the app, click the **settings (gear)** icon in the top bar → enter API key and model → **Save** → **Test**.
+3. Or set environment variables (these override the saved file):
+
+```bash
+export OPENROUTER_API_KEY="sk-or-..."
+export OPENROUTER_MODEL="openai/gpt-4o-mini"   # optional; default if omitted
+```
+
+Optional hardening when exposing the server on a network:
+
+```bash
+export AI_SETTINGS_TOKEN="your-secret"   # require X-AI-Settings-Token header on settings PUT
+```
+
+### Features
+
+| Feature | Where |
+|:---|:---|
+| **AI Assistant** | Top bar **AI** — chat about current page or whole document |
+| **Text actions** | Text properties panel or right-click on selected text — rewrite, grammar, shorten, expand, translate |
+| **Metadata** | Document panel → **Suggest Metadata (AI)** |
+| **Forms** | Forms mode → **Fill with AI** |
+| **AI OCR** | Page properties → choose **AI OCR font**, then **AI OCR** (vision model; requires a vision-capable model). Bold, italic, and color may still be inferred per block when obvious. |
+| **Tesseract OCR** | Page properties → **OCR Page** (offline; needs Tesseract on server) |
+
+### Privacy
+
+AI requests send extracted PDF text and/or page images to OpenRouter and the model provider you choose. Do not use with confidential documents unless your provider and policies allow it.
+
+---
+
 ## Technology Stack
 
 PDFEdit relies on a highly focused, modern open-source toolchain:
@@ -234,6 +280,7 @@ PDFEdit relies on a highly focused, modern open-source toolchain:
 *   **Image Parsing:** [Pillow (PIL)](https://python-pillow.org/) (High-performance pixel processing).
 *   **Interactive UI Layer:** [Fabric.js v5](https://fabricjs.com/) (HTML5 Canvas vector engine, object collision, scaling, custom canvas serialize/deserialize).
 *   **Typography:** Google Fonts integration (Inter, Outfit, Fira Code).
+*   **AI (optional):** [OpenRouter](https://openrouter.ai/) via `requests` (server-side proxy).
 
 ---
 
@@ -305,7 +352,24 @@ The PDFEdit server exposes a comprehensive, RESTful JSON API for PDF extraction,
 </details>
 
 <details>
-<summary>5. Export Operations</summary>
+<summary>5. AI (OpenRouter)</summary>
+
+| Endpoint | Method | Description | Payload / Parameters |
+|:---|:---|:---|:---|
+| `/ai/settings` | `GET` | Masked AI config (`configured`, `model`, `key_preview`) | None |
+| `/ai/settings` | `PUT` | Save API key and/or model on server | JSON: `api_key`, `model`; optional header `X-AI-Settings-Token` |
+| `/ai/settings/test` | `POST` | Test OpenRouter connection | None |
+| `/ai/models` | `GET` | List available OpenRouter models | None |
+| `/ai/chat` | `POST` | Document assistant chat | JSON: `session_id`, `scope` (`page`/`document`), `page_num`, `messages[]`, optional `selection_text` |
+| `/ai/text-action` | `POST` | Rewrite / translate / grammar / shorten / expand | JSON: `action`, `text`, optional `target_lang` |
+| `/ai/metadata/suggest` | `POST` | Suggest title, subject, keywords, summary | JSON: `session_id` |
+| `/ai/forms/suggest` | `POST` | Suggest form field values | JSON: `session_id`, `page_num`, optional `fields[]` |
+| `/ai/ocr` | `POST` | Vision-model OCR (same response shape as Tesseract OCR) | JSON: `session_id`, `page_num` |
+
+</details>
+
+<details>
+<summary>6. Export Operations</summary>
 
 | Endpoint | Method | Description | Payload / Parameters |
 |:---|:---|:---|:---|

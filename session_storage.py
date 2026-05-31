@@ -54,15 +54,6 @@ def session_exists(session_id):
     return os.path.isfile(document_path(session_id))
 
 
-def list_session_ids():
-    if not os.path.isdir(UNSAVED_DIR):
-        return []
-    return [
-        name for name in os.listdir(UNSAVED_DIR)
-        if os.path.isfile(document_path(name))
-    ]
-
-
 def write_meta(session_id, meta):
     ensure_data_dirs()
     os.makedirs(session_dir(session_id), exist_ok=True)
@@ -102,15 +93,6 @@ def write_drafts(session_id, drafts):
     payload = {**drafts, "updated_at": _utc_now()}
     with open(drafts_path(session_id), "w", encoding="utf-8") as f:
         json.dump(payload, f)
-
-
-def clear_drafts(session_id):
-    path = drafts_path(session_id)
-    if os.path.isfile(path):
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
 
 
 def create_session_from_bytes(session_id, pdf_bytes, meta=None):

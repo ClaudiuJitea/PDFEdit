@@ -3,7 +3,7 @@ if (typeof fabric !== 'undefined' && fabric.Line) {
     const originalLineRender = fabric.Line.prototype._render;
     fabric.Line.prototype._render = function(ctx) {
         originalLineRender.call(this, ctx);
-        if (this._elementType === 'arrow' || this.arrow) {
+        if (this._elementType === 'arrow') {
             ctx.save();
             const p = this.calcLinePoints();
             const dx = p.x2 - p.x1;
@@ -66,6 +66,7 @@ class PDFEditor {
         this.onLinkAreaDrawn = null;
         this.arrowMode = false;
         this.deletedOriginals = [];
+        this._deletedOcrMasks = [];
         this.stampType = 'approved';
         this.stampConfig = StampKit.getPreset('approved');
         this.brushSettings = {
@@ -76,6 +77,7 @@ class PDFEditor {
         };
         this._linkDrawMode = false;
         this._objectIdSeq = 0;
+        this.pendingOcrText = null;
         this._undoProps = [
             '_elementType', '_isRedaction', 'origin', 'originalPdfBbox', '_modified',
             '_stickyColor', '_stickyText', '_stickyPinned', '_textCase', '_pdfEditId',
@@ -116,12 +118,16 @@ class PDFEditor {
 
     _registerCanvasObject(obj) {
         this.ensureObjectId(obj);
+        this.applyTextboxWrapResize(obj);
         return obj;
     }
 
     assignIdsToAllObjects() {
         if (!this.canvas) return;
-        this.canvas.getObjects().forEach((obj) => this.ensureObjectId(obj));
+        this.canvas.getObjects().forEach((obj) => {
+            this.ensureObjectId(obj);
+            this.applyTextboxWrapResize(obj);
+        });
     }
 
     _discardActiveSelection() {
@@ -220,10 +226,22 @@ class PDFEditor {
         this.canvas.on('selection:updated', (e) => {
             if (this.onObjectSelected) this.onObjectSelected(e.selected);
         });
+        this.canvas.on('text:selection:changed', (e) => {
+            if (this.onTextSelectionChanged && e.target) {
+                this.onTextSelectionChanged(e.target);
+            }
+        });
+        this.canvas.on('text:changed', (e) => {
+            if (this.onTextSelectionChanged && e.target) {
+                this.onTextSelectionChanged(e.target);
+            }
+        });
         this.canvas.on('selection:cleared', () => {
             if (this.onSelectionCleared) this.onSelectionCleared();
         });
+        this.canvas.on('object:scaling', (e) => this._onTextObjectTransform(e));
         this.canvas.on('object:modified', (e) => {
+            this._onTextObjectTransform(e);
             if (e.target && e.target.origin === 'pdf') {
                 e.target._modified = true;
             }
@@ -475,6 +493,68 @@ class PDFEditor {
         return this._isTextLinkTarget(obj);
     }
 
+    applyTextboxWrapResize(obj) {
+        if (!obj || obj.type !== 'textbox') return obj;
+        obj.set({
+            lockScalingY: true,
+            lockScalingFlip: true,
+            splitByGrapheme: false,
+        });
+        if (typeof obj.setControlsVisibility === 'function') {
+            obj.setControlsVisibility({
+                mt: false,
+                mb: false,
+            });
+        }
+        if (Math.abs((obj.scaleX ?? 1) - 1) > 0.001 || Math.abs((obj.scaleY ?? 1) - 1) > 0.001) {
+            this.normalizeTextObjectScale(obj);
+        }
+        return obj;
+    }
+
+    /**
+     * Convert resize scale into width (Textbox) or font size (IText) so text wraps instead of stretching.
+     */
+    normalizeTextObjectScale(obj) {
+        if (!obj || !this.isTextObject(obj)) return;
+
+        const sx = obj.scaleX ?? 1;
+        const sy = obj.scaleY ?? 1;
+        if (Math.abs(sx - 1) < 0.001 && Math.abs(sy - 1) < 0.001) return;
+
+        if (obj.type === 'textbox') {
+            const minW = obj.minWidth ?? 40;
+            const newWidth = Math.max(minW, (obj.width || 100) * Math.abs(sx));
+            obj.set({
+                width: newWidth,
+                scaleX: 1,
+                scaleY: 1,
+            });
+            if (typeof obj.initDimensions === 'function') {
+                obj.initDimensions();
+            }
+        } else if (obj.type === 'i-text' || obj.type === 'text') {
+            const scale = Math.max(Math.abs(sx), Math.abs(sy));
+            const newSize = Math.max(6, (obj.fontSize || 16) * scale);
+            obj.set({
+                fontSize: newSize,
+                scaleX: 1,
+                scaleY: 1,
+            });
+        }
+        obj.setCoords();
+    }
+
+    _onTextObjectTransform(e) {
+        const target = e?.target;
+        if (!target) return;
+        if (target.type === 'activeSelection' && typeof target.getObjects === 'function') {
+            target.getObjects().forEach((obj) => this.normalizeTextObjectScale(obj));
+            return;
+        }
+        this.normalizeTextObjectScale(target);
+    }
+
     getPageContentMargins() {
         const marginX = this.canvasWidth * 0.08;
         const marginY = this.canvasHeight * 0.06;
@@ -560,6 +640,127 @@ class PDFEditor {
         }
 
         return this.alignTextObjectsToPageMargins([obj], mode, options);
+    }
+
+    getTextSelectionStyles(obj) {
+        if (!obj) return {};
+        const styles = (typeof obj.getActiveStyle === 'function' && obj.isEditing)
+            ? obj.getActiveStyle()
+            : {};
+        return {
+            bold: (styles.fontWeight != null ? styles.fontWeight : obj.fontWeight) >= 700,
+            italic: (styles.fontStyle != null ? styles.fontStyle : obj.fontStyle) === 'italic',
+            underline: styles.underline != null ? styles.underline : obj.underline,
+            linethrough: styles.linethrough != null ? styles.linethrough : obj.linethrough,
+        };
+    }
+
+    alignSelectedLines(obj, textAlign) {
+        if (!obj || !obj.isEditing) return false;
+
+        const selStart = obj.selectionStart;
+        const selEnd = obj.selectionEnd;
+        if (selStart === selEnd) return false;
+
+        const text = obj.text || '';
+        if (!text.trim()) return false;
+
+        let lineStart = text.lastIndexOf('\n', selStart - 1);
+        lineStart = lineStart === -1 ? 0 : lineStart + 1;
+
+        let lineEnd = text.indexOf('\n', selEnd);
+        if (lineEnd === -1) {
+            lineEnd = text.length;
+        }
+
+        if (lineStart === 0 && lineEnd === text.length) return false;
+
+        const beforeText = text.slice(0, lineStart);
+        const selectedText = text.slice(lineStart, lineEnd);
+        const afterText = lineEnd < text.length ? text.slice(lineEnd) : '';
+
+        const cleanBefore = beforeText.replace(/\n+$/, '');
+        const cleanSelected = selectedText.replace(/^\n+/, '').replace(/\n+$/, '');
+        const cleanAfter = afterText.replace(/^\n+/, '');
+
+        if (!cleanSelected.trim()) return false;
+
+        obj.exitEditing();
+
+        const baseProps = {
+            width: obj.width,
+            fontSize: obj.fontSize,
+            fontFamily: obj.fontFamily,
+            fontWeight: obj.fontWeight,
+            fontStyle: obj.fontStyle,
+            fill: obj.fill,
+            lineHeight: obj.lineHeight,
+            charSpacing: obj.charSpacing,
+            backgroundColor: obj.backgroundColor,
+            underline: obj.underline,
+            linethrough: obj.linethrough,
+            opacity: obj.opacity,
+            stroke: obj.stroke,
+            strokeWidth: obj.strokeWidth,
+            _elementType: obj._elementType,
+            origin: obj.origin,
+            _textCase: obj._textCase,
+            splitByGrapheme: false,
+        };
+        const originalAlign = obj.textAlign || 'left';
+        const originalLeft = obj.left;
+        const originalTop = obj.top;
+
+        this.canvas.remove(obj);
+
+        const parts = [];
+        if (cleanBefore) {
+            parts.push({ text: cleanBefore, align: originalAlign });
+        }
+        parts.push({ text: cleanSelected, align: textAlign });
+        if (cleanAfter) {
+            parts.push({ text: cleanAfter, align: originalAlign });
+        }
+
+        let currentTop = originalTop;
+        const gap = 4;
+        let selBox = null;
+
+        for (let i = 0; i < parts.length; i++) {
+            const part = parts[i];
+            const box = new fabric.Textbox(part.text, {
+                ...baseProps,
+                left: originalLeft,
+                top: currentTop,
+                textAlign: part.align,
+                editable: true,
+            });
+            if (typeof box.initDimensions === 'function') {
+                box.initDimensions();
+            }
+            box.setCoords();
+            this.canvas.add(box);
+            this._registerCanvasObject(box);
+            currentTop = box.top + box.getScaledHeight() + gap;
+            if (part.align === textAlign && part.text === cleanSelected) {
+                selBox = box;
+            }
+            if (box.origin === 'pdf') {
+                box._modified = true;
+            }
+        }
+
+        if (selBox) {
+            this.canvas.setActiveObject(selBox);
+        }
+        this.assignIdsToAllObjects();
+        this.canvas.requestRenderAll();
+
+        if (this.onObjectSelected && selBox) {
+            this.onObjectSelected([selBox]);
+        }
+
+        return true;
     }
 
     alignTextObjectsToPageMargins(objects, mode, options = {}) {
@@ -915,10 +1116,12 @@ class PDFEditor {
     }
 
     _createText(x, y) {
-        const textbox = new fabric.Textbox('Type here', {
+        const pending = this.consumePendingOcrText();
+        const initialText = pending || 'Type here';
+        const textbox = new fabric.Textbox(initialText, {
             left: x,
             top: y,
-            width: 200,
+            width: pending ? Math.min(420, Math.max(200, this.canvasWidth * 0.45)) : 200,
             fontSize: 16 * this.pdfScale,
             fontFamily: 'Helvetica',
             fontWeight: 400,
@@ -933,10 +1136,621 @@ class PDFEditor {
         this.canvas.add(textbox);
         this._registerCanvasObject(textbox);
         textbox.enterEditing();
-        textbox.selectAll();
+        if (pending) {
+            textbox.selectionStart = textbox.text.length;
+            textbox.selectionEnd = textbox.text.length;
+        } else {
+            textbox.selectAll();
+        }
         if (this.onCanvasModified) this.onCanvasModified();
         return textbox;
     }
+
+    setPendingOcrText(text) {
+        const trimmed = (text || '').trim();
+        this.pendingOcrText = trimmed || null;
+    }
+
+    consumePendingOcrText() {
+        const text = this.pendingOcrText;
+        this.pendingOcrText = null;
+        return text;
+    }
+
+    getSelectedImageObject() {
+        const active = this.getActiveObjects();
+        if (active.length !== 1) return null;
+        const obj = active[0];
+        if (obj._elementType === 'image' || obj.type === 'image') {
+            return obj;
+        }
+        return null;
+    }
+
+    /**
+     * Visual axis-aligned bounds of the replace source on the canvas.
+     */
+    _captureOcrReplaceBounds(obj) {
+        if (obj) {
+            obj.setCoords();
+            const br = obj.getBoundingRect(true, true);
+            return {
+                left: br.left,
+                top: br.top,
+                width: Math.max(br.width, 1),
+                height: Math.max(br.height, 1),
+                angle: obj.angle || 0,
+            };
+        }
+        return {
+            left: 0,
+            top: 0,
+            width: Math.max(this.canvasWidth, 1),
+            height: Math.max(this.canvasHeight, 1),
+            angle: 0,
+        };
+    }
+
+
+    _unionBboxFromElements(elements) {
+        let minL = Infinity;
+        let minT = Infinity;
+        let maxR = -Infinity;
+        let maxB = -Infinity;
+        (elements || []).forEach((elem) => {
+            const b = elem.bbox;
+            if (!b || b.length < 4) return;
+            minL = Math.min(minL, b[0]);
+            minT = Math.min(minT, b[1]);
+            maxR = Math.max(maxR, b[2]);
+            maxB = Math.max(maxB, b[3]);
+        });
+        if (!Number.isFinite(minL)) {
+            return null;
+        }
+        return {
+            left: minL,
+            top: minT,
+            width: Math.max(maxR - minL, 1),
+            height: Math.max(maxB - minT, 1),
+            angle: 0,
+        };
+    }
+
+    _estimatePageOcrBounds(content) {
+        const pad = 32;
+        const maxW = Math.max(this.canvasWidth - pad * 2, 200);
+        const fontSize = Math.min(18, Math.max(11, 13 * (this.pdfScale || 2) * 0.45));
+        const probe = new fabric.Textbox(content, {
+            width: maxW,
+            fontSize,
+            lineHeight: 1.15,
+        });
+        if (typeof probe.initDimensions === 'function') {
+            probe.initDimensions();
+        }
+        const textH = Math.max((probe.height || 80) * (probe.scaleY || 1), 40);
+        return {
+            left: pad,
+            top: pad,
+            width: maxW,
+            height: Math.min(textH + pad, Math.max(this.canvasHeight - pad * 2, textH)),
+            angle: 0,
+        };
+    }
+
+    /**
+     * Place mask + text at bounds without non-uniform scaling (avoids stretched glyphs).
+     */
+    _styledOcrElementsFromList(elements) {
+        if (!elements?.length) return null;
+        const textEls = elements.filter((e) => e?.type === 'text' && String(e.text || '').trim());
+        if (!textEls.length || !textEls.some((e) => e.origin === 'ocr')) return null;
+        const masks = elements.filter((e) => e?.type === 'rect');
+        return { textEls, masks, loadOrder: [...masks, ...textEls] };
+    }
+
+    _createOcrReplaceAtBounds(content, box, options = {}) {
+        const {
+            skipMask = false,
+            extraMaskElements = null,
+            fontFamily = 'Helvetica',
+            fill = '#111111',
+            fontWeight = 'normal',
+            fontStyle = 'normal',
+            backgroundColor = '#ffffff',
+        } = options;
+        const lineHeight = 1.15;
+        const fontSize = this._fitOcrFontSize(content, box.width, box.height, lineHeight);
+        const pdfBbox = this.canvasBoundsToPdfBbox({
+            left: box.left,
+            top: box.top,
+            width: box.width,
+            height: box.height,
+        });
+
+        if (extraMaskElements?.length) {
+            extraMaskElements
+                .filter((e) => e.type === 'rect')
+                .forEach((elem) => {
+                    try {
+                        this._loadSingleElement(elem);
+                    } catch (e) {
+                        console.warn('OCR mask load failed:', e);
+                    }
+                });
+            this.canvas.getObjects()
+                .filter((o) => o._elementType === 'ocr_mask')
+                .forEach((m) => this.canvas.sendToBack(m));
+        }
+
+        if (!skipMask && !extraMaskElements?.length) {
+            const mask = new fabric.Rect({
+                left: box.left,
+                top: box.top,
+                width: box.width,
+                height: box.height,
+                originX: 'left',
+                originY: 'top',
+                angle: box.angle || 0,
+                fill: '#ffffff',
+                stroke: 'transparent',
+                strokeWidth: 0,
+                opacity: 1,
+                _elementType: 'ocr_mask',
+                origin: 'ocr',
+                originalPdfBbox: pdfBbox,
+                selectable: false,
+                evented: false,
+            });
+            this.canvas.add(mask);
+            this.canvas.sendToBack(mask);
+        }
+
+        const textbox = new fabric.Textbox(content, {
+            left: box.left,
+            top: box.top,
+            originX: 'left',
+            originY: 'top',
+            width: box.width,
+            angle: box.angle || 0,
+            fontSize,
+            fontFamily: fontFamily || 'Helvetica',
+            fill: fill || '#111111',
+            fontWeight: fontWeight || 'normal',
+            fontStyle: fontStyle || 'normal',
+            backgroundColor: backgroundColor || '#ffffff',
+            lineHeight,
+            textAlign: 'left',
+            scaleX: 1,
+            scaleY: 1,
+            editable: true,
+            origin: 'ocr',
+            originalPdfBbox: pdfBbox,
+            _elementType: 'text',
+            splitByGrapheme: false,
+        });
+        if (typeof textbox.initDimensions === 'function') {
+            textbox.initDimensions();
+        }
+        this.canvas.add(textbox);
+        this._registerCanvasObject(textbox);
+        textbox.bringToFront();
+        return textbox;
+    }
+
+    /**
+     * Bounds for OCR replace: selected picture, or full page scan (canvas).
+     */
+    resolveOcrReplaceSource(imageObj = null) {
+        const image = imageObj || this.getSelectedImageObject();
+        if (image) {
+            return {
+                kind: 'image',
+                target: image,
+                bounds: this._captureOcrReplaceBounds(image),
+            };
+        }
+        return {
+            kind: 'page',
+            target: null,
+            bounds: this._captureOcrReplaceBounds(null),
+        };
+    }
+
+    _collectOcrPunchRegions(extraRegions = []) {
+        const pad = 6;
+        const regions = [];
+        const addRect = (left, top, width, height) => {
+            if (!Number.isFinite(left) || width <= 0 || height <= 0) return;
+            regions.push({
+                left: Math.max(0, left - pad),
+                top: Math.max(0, top - pad),
+                width: width + pad * 2,
+                height: height + pad * 2,
+            });
+        };
+
+        (extraRegions || []).forEach((b) => {
+            if (!b) return;
+            addRect(b.left, b.top, b.width, b.height);
+        });
+
+        if (!this.canvas) return regions;
+
+        this.canvas.getObjects().forEach((obj) => {
+            if (!this._isOcrMaskObject(obj)) {
+                return;
+            }
+            obj.setCoords();
+            const br = obj.getBoundingRect(true, true);
+            addRect(br.left, br.top, br.width, br.height);
+        });
+
+        return regions;
+    }
+
+    /**
+     * Paint over scanned regions on the page background image so the source is removed visually.
+     */
+    async eraseScannedRegionsFromBackground(extraRegions = []) {
+        if (!this.canvas?.backgroundImage) {
+            return false;
+        }
+
+        const regions = this._collectOcrPunchRegions(extraRegions);
+        if (!regions.length) {
+            return false;
+        }
+
+        const w = this.canvasWidth;
+        const h = this.canvasHeight;
+        const off = document.createElement('canvas');
+        off.width = w;
+        off.height = h;
+        const ctx = off.getContext('2d');
+        if (!ctx) {
+            return false;
+        }
+
+        const bg = this.canvas.backgroundImage;
+        const imgEl = bg._originalElement
+            || (typeof bg.getElement === 'function' ? bg.getElement() : null);
+        if (!imgEl) {
+            return false;
+        }
+
+        try {
+            ctx.drawImage(imgEl, 0, 0, w, h);
+            ctx.fillStyle = '#ffffff';
+            regions.forEach((r) => {
+                ctx.fillRect(
+                    Math.floor(r.left),
+                    Math.floor(r.top),
+                    Math.ceil(r.width),
+                    Math.ceil(r.height)
+                );
+            });
+            const dataUrl = off.toDataURL('image/png');
+            await this.setBackground(dataUrl);
+            this._ocrBackgroundPunched = true;
+            this.canvas.requestRenderAll();
+            return true;
+        } catch (err) {
+            console.warn('Failed to erase scan from background:', err);
+            return false;
+        }
+    }
+
+    _canvasRectFromPdfBbox(pdfBbox) {
+        const scale = this.pdfScale || 2;
+        return {
+            left: pdfBbox[0] * scale,
+            top: pdfBbox[1] * scale,
+            width: (pdfBbox[2] - pdfBbox[0]) * scale,
+            height: (pdfBbox[3] - pdfBbox[1]) * scale,
+        };
+    }
+
+    /**
+     * Remove embedded PDF images that are the OCR source (handwriting scans, etc.).
+     */
+    removePdfImagesInPdfBboxes(pdfBboxes, removeAllPdfImages = false) {
+        if (!this.canvas) return [];
+        const regions = (pdfBboxes || []).map((b) => this._canvasRectFromPdfBbox(b));
+        const removedBboxes = [];
+
+        this.canvas.getObjects().slice().forEach((obj) => {
+            const isImage = obj.type === 'image' || obj._elementType === 'image';
+            if (!isImage) return;
+
+            let shouldRemove = false;
+            if (removeAllPdfImages) {
+                shouldRemove = true;
+            } else if (regions.length) {
+                obj.setCoords();
+                const br = obj.getBoundingRect(true, true);
+                shouldRemove = regions.some((r) => this._rectsOverlap(br, r, 8));
+            }
+
+            if (!shouldRemove) return;
+
+            const scale = this.pdfScale || 2;
+            let pdfBbox = obj.originalPdfBbox;
+            if (!pdfBbox || pdfBbox.length !== 4) {
+                obj.setCoords();
+                const br = obj.getBoundingRect(true, true);
+                pdfBbox = [
+                    br.left / scale,
+                    br.top / scale,
+                    (br.left + br.width) / scale,
+                    (br.top + br.height) / scale,
+                ];
+            }
+            removedBboxes.push(pdfBbox);
+            this.deletedOriginals.push({
+                pdf_bbox: [...pdfBbox],
+                type: 'image',
+            });
+            this.canvas.remove(obj);
+        });
+        return removedBboxes;
+    }
+
+    /** Remove every image layer on the canvas (the usual OCR source). */
+    removeAllCanvasImagesForOcrReplace() {
+        return this.removePdfImagesInPdfBboxes([], true);
+    }
+
+    _unionCanvasBboxFromPdfBboxes(pdfBboxes) {
+        if (!pdfBboxes?.length) return null;
+        const scale = this.pdfScale || 2;
+        let minL = Infinity;
+        let minT = Infinity;
+        let maxR = -Infinity;
+        let maxB = -Infinity;
+        pdfBboxes.forEach((b) => {
+            if (!b || b.length < 4) return;
+            minL = Math.min(minL, b[0] * scale);
+            minT = Math.min(minT, b[1] * scale);
+            maxR = Math.max(maxR, b[2] * scale);
+            maxB = Math.max(maxB, b[3] * scale);
+        });
+        if (!Number.isFinite(minL)) return null;
+        return {
+            left: minL,
+            top: minT,
+            width: Math.max(maxR - minL, 1),
+            height: Math.max(maxB - minT, 1),
+            angle: 0,
+        };
+    }
+
+    _pdfBboxesFromElements(elements) {
+        const out = [];
+        (elements || []).forEach((elem) => {
+            const b = elem.pdf_bbox;
+            if (b && b.length === 4) {
+                out.push([...b]);
+            }
+        });
+        return out;
+    }
+
+    collectOcrMaskPdfBboxes() {
+        const scale = this.pdfScale || 2;
+        const bboxes = [];
+        if (!this.canvas) return bboxes;
+
+        this.canvas.getObjects().forEach((obj) => {
+            if (!this._isOcrMaskObject(obj)) {
+                return;
+            }
+            if (obj.originalPdfBbox && obj.originalPdfBbox.length === 4) {
+                bboxes.push([...obj.originalPdfBbox]);
+                return;
+            }
+            obj.setCoords();
+            const br = obj.getBoundingRect(true, true);
+            bboxes.push([
+                br.left / scale,
+                br.top / scale,
+                (br.left + br.width) / scale,
+                (br.top + br.height) / scale,
+            ]);
+        });
+        return bboxes;
+    }
+
+    async refreshPageBackgroundWithMasks(sessionId, pageNum, pdfBboxes) {
+        const unique = [];
+        const seen = new Set();
+        (pdfBboxes || []).forEach((bbox) => {
+            if (!bbox || bbox.length !== 4) return;
+            const key = bbox.map((n) => Math.round(n * 10) / 10).join(',');
+            if (seen.has(key)) return;
+            seen.add(key);
+            unique.push(bbox);
+        });
+        if (!unique.length || !sessionId || pageNum == null) {
+            return false;
+        }
+        try {
+            const data = await API.getPageMaskedPreview(sessionId, pageNum, unique);
+            if (data.image) {
+                await this.setBackground(data.image);
+                this._ocrBackgroundPunched = true;
+                return true;
+            }
+        } catch (err) {
+            console.warn('Server background mask failed:', err);
+        }
+        return false;
+    }
+
+    _isOcrMaskObject(obj) {
+        return obj._elementType === 'ocr_mask' || (obj.origin === 'ocr' && obj.type === 'rect');
+    }
+
+    /** PDF regions to redact underlying scan when saving after OCR replace. */
+    getOcrRedactAreas() {
+        const scale = this.pdfScale || 2;
+        const areas = [];
+        if (!this.canvas) return areas;
+
+        this.canvas.getObjects().forEach((obj) => {
+            if (!this._isOcrMaskObject(obj)) {
+                return;
+            }
+            let pdfBbox = obj.originalPdfBbox;
+            if (!pdfBbox || pdfBbox.length !== 4) {
+                obj.setCoords();
+                const br = obj.getBoundingRect(true, true);
+                pdfBbox = [
+                    br.left / scale,
+                    br.top / scale,
+                    (br.left + br.width) / scale,
+                    (br.top + br.height) / scale,
+                ];
+            }
+            areas.push({ pdf_bbox: pdfBbox });
+        });
+
+        for (const mask of this._deletedOcrMasks) {
+            areas.push({ pdf_bbox: mask.pdf_bbox });
+        }
+        this._deletedOcrMasks = [];
+
+        return areas;
+    }
+
+    _fitOcrFontSize(text, boxWidth, boxHeight, lineHeight = 1.15) {
+        const lines = String(text).split('\n');
+        const lineCount = Math.max(1, lines.length);
+        const widest = Math.max(...lines.map((l) => l.length), 1);
+        let size = Math.floor((boxHeight / lineCount) / lineHeight * 0.9);
+        const widthLimit = Math.floor(boxWidth / Math.max(widest * 0.52, 1));
+        size = Math.min(size, widthLimit);
+        return Math.min(28, Math.max(8, size));
+    }
+
+    /**
+     * Replace page scan or image with masks + editable text (no scale stretching).
+     */
+    async applyOcrReplaceSource(source, text, options = {}) {
+        const content = (text || '').trim();
+        if (!source || !content) {
+            return null;
+        }
+
+        const { elements = null, sourcePdfBboxes = [] } = options;
+        const { target, kind } = source;
+        const punchRegions = [];
+        let allSourcePdfBboxes = [...sourcePdfBboxes];
+
+        if (kind === 'page') {
+            const removedBboxes = this.removeAllCanvasImagesForOcrReplace();
+            allSourcePdfBboxes.push(...removedBboxes);
+        } else {
+            const removedBboxes = this.removePdfImagesInPdfBboxes(allSourcePdfBboxes, false);
+            allSourcePdfBboxes.push(...removedBboxes);
+        }
+
+        allSourcePdfBboxes.push(...this._pdfBboxesFromElements(elements));
+
+        if (target && this.canvas.getObjects().includes(target)) {
+            source.bounds = this._captureOcrReplaceBounds(target);
+            punchRegions.push(source.bounds);
+            allSourcePdfBboxes.push(this.canvasBoundsToPdfBbox({
+                left: source.bounds.left,
+                top: source.bounds.top,
+                width: source.bounds.width,
+                height: source.bounds.height,
+            }));
+            this.canvas.remove(target);
+        }
+
+        let box = source.bounds;
+        let textbox;
+
+        const sourceUnion = this._unionCanvasBboxFromPdfBboxes(allSourcePdfBboxes);
+
+        const maskPdfBboxes = [...allSourcePdfBboxes];
+        let bgOk = false;
+        if (options.sessionId != null && options.pageNum != null && maskPdfBboxes.length) {
+            bgOk = await this.refreshPageBackgroundWithMasks(
+                options.sessionId,
+                options.pageNum,
+                maskPdfBboxes
+            );
+        }
+
+        const styledOcr = this._styledOcrElementsFromList(elements);
+        const styleSample = styledOcr?.textEls?.[0] || elements?.find((e) => e?.type === 'text');
+        const ocrTextStyle = styleSample ? {
+            fontFamily: styleSample.fontFamily || 'Helvetica',
+            fill: styleSample.fill || '#111111',
+            fontWeight: styleSample.bold || styleSample.fontWeight === 'bold' ? 'bold' : 'normal',
+            fontStyle: styleSample.italic ? 'italic' : 'normal',
+            backgroundColor: styleSample.backgroundColor || '#ffffff',
+        } : {};
+
+        if (styledOcr) {
+            if (kind === 'page') {
+                const union = sourceUnion || this._unionBboxFromElements(styledOcr.loadOrder);
+                if (union) punchRegions.push(union);
+            } else if (box) {
+                punchRegions.push(box);
+            }
+            this.loadElements(styledOcr.loadOrder);
+            if (!bgOk) {
+                await this.eraseScannedRegionsFromBackground(punchRegions);
+            }
+            this.canvas.renderAll();
+            const placed = this.canvas.getObjects().filter(
+                (o) => o._elementType === 'text' && o.origin === 'ocr'
+            );
+            textbox = placed[placed.length - 1] || null;
+        } else if (kind === 'page' && elements?.length) {
+            const union = sourceUnion || this._unionBboxFromElements(elements);
+            if (union) {
+                punchRegions.push(union);
+            }
+            box = union || this._estimatePageOcrBounds(content);
+            textbox = this._createOcrReplaceAtBounds(content, box, {
+                extraMaskElements: elements,
+                ...ocrTextStyle,
+            });
+        } else if (kind === 'page') {
+            box = sourceUnion || this._estimatePageOcrBounds(content);
+            punchRegions.push(box);
+            textbox = this._createOcrReplaceAtBounds(content, box, ocrTextStyle);
+        } else if (box) {
+            punchRegions.push(box);
+            maskPdfBboxes.push(...this.collectOcrMaskPdfBboxes());
+            textbox = this._createOcrReplaceAtBounds(content, box, ocrTextStyle);
+        } else {
+            return null;
+        }
+
+        if (!bgOk) {
+            await this.eraseScannedRegionsFromBackground(punchRegions);
+        }
+
+        this.canvas.setActiveObject(textbox);
+        this.canvas.requestRenderAll();
+        this.assignIdsToAllObjects();
+
+        if (this.onObjectSelected) {
+            this.onObjectSelected([textbox]);
+        }
+        if (this.onCanvasModified) {
+            this.onCanvasModified();
+        }
+        textbox._ocrReplaceKind = kind;
+        return textbox;
+    }
+
 
     _createSticky(x, y) {
         const color = '#fff9c4';
@@ -1367,6 +2181,12 @@ class PDFEditor {
                     type: obj._elementType || obj.type,
                 });
             }
+            if (obj._elementType === 'ocr_mask' && obj.originalPdfBbox) {
+                this._deletedOcrMasks.push({
+                    pdf_bbox: obj.originalPdfBbox,
+                    type: 'ocr_mask',
+                });
+            }
             this.canvas.remove(obj);
         });
         this.canvas.discardActiveObject();
@@ -1383,8 +2203,8 @@ class PDFEditor {
     }
 
     nudgeSelectedObjects(deltaX, deltaY) {
-        const activeObjects = this.canvas.getActiveObjects();
-        if (activeObjects.length === 0 || !activeObjects.every((obj) => this._isNudgeableObject(obj))) {
+        const activeObjects = this.canvas.getActiveObjects().filter((obj) => this._isNudgeableObject(obj));
+        if (activeObjects.length === 0) {
             return false;
         }
 
@@ -1420,7 +2240,7 @@ class PDFEditor {
 
     loadElements(elements) {
         const orderPriority = {
-            rect: 0, ellipse: 0, path: 0, highlight: 0, redaction: 0, sticky: 0, stamp: 0, image: 1, text: 2,
+            rect: 0, ellipse: 0, path: 0, highlight: 0, redaction: 0, sticky: 0, stamp: 0, image: 1, text: 2, ocr_mask: 0,
         };
         const sorted = [...elements].sort((a, b) => {
             const pa = orderPriority[a.type] ?? 1;
@@ -1447,6 +2267,7 @@ class PDFEditor {
         switch (elem.type) {
             case 'text': {
                 const isPdf = elem.origin === 'pdf';
+                const isOcr = elem.origin === 'ocr';
                 const fontWeight = elem.fontWeight != null
                     ? elem.fontWeight
                     : (elem.bold ? 'bold' : 'normal');
@@ -1486,10 +2307,26 @@ class PDFEditor {
                     textOpts.origin = 'pdf';
                     textOpts.originalPdfBbox = originPdfBbox;
                 }
+                const boxWidth = Math.max(bbox[2] - bbox[0], 80);
                 const text = isPdf
                     ? new fabric.IText(elem.text || '', textOpts)
-                    : new fabric.Textbox(elem.text || '', { ...textOpts, width: Math.max(bbox[2] - bbox[0], 80) });
+                    : new fabric.Textbox(elem.text || '', {
+                        ...textOpts,
+                        width: boxWidth,
+                        minWidth: 40,
+                    });
+                if (isOcr) {
+                    text.set({
+                        origin: 'ocr',
+                        _elementType: 'text',
+                        splitByGrapheme: false,
+                    });
+                }
                 this.canvas.add(text);
+                if (isOcr) text.bringToFront();
+                if (text.type === 'textbox') {
+                    this.applyTextboxWrapResize(text);
+                }
                 this._registerCanvasObject(text);
                 break;
             }
@@ -1514,6 +2351,7 @@ class PDFEditor {
                 break;
             }
             case 'rect': {
+                const isOcrMask = elem.origin === 'ocr';
                 const rect = new fabric.Rect({
                     left: bbox[0],
                     top: bbox[1],
@@ -1523,9 +2361,11 @@ class PDFEditor {
                     stroke: elem.stroke || 'transparent',
                     strokeWidth: elem.strokeWidth || 0,
                     strokeUniform: true,
-                    _elementType: 'rect',
-                    origin: 'pdf',
+                    _elementType: isOcrMask ? 'ocr_mask' : 'rect',
+                    origin: isOcrMask ? 'ocr' : 'pdf',
                     originalPdfBbox: originPdfBbox,
+                    selectable: !isOcrMask,
+                    evented: !isOcrMask,
                 });
                 if (elem.opacity !== undefined && elem.opacity < 1) {
                     rect.set('opacity', elem.opacity);
@@ -1972,6 +2812,9 @@ class PDFEditor {
             if (obj.origin === 'pdf' && !obj._modified) {
                 return false;
             }
+            if (this._isOcrMaskObject(obj)) {
+                return false;
+            }
             return true;
         }).map((obj) => {
             const base = {
@@ -2087,7 +2930,7 @@ class PDFEditor {
                 base.strokeWidth = obj.strokeWidth || 0;
                 base.opacity = obj.opacity;
             } else if (obj.type === 'line') {
-                base.type = obj._elementType === 'arrow' ? 'line' : 'line';
+                base.type = obj._elementType === 'arrow' ? 'arrow' : 'line';
                 const x1 = obj.x1 || 0;
                 const y1 = obj.y1 || 0;
                 const x2 = obj.x2 || 0;
@@ -2276,6 +3119,17 @@ class PDFEditor {
             toCreate.push({ ...json, _pdfEditId: id });
         });
 
+        const snapshotIds = new Set(snapshot.objects.map((s) => s.id));
+        this.canvas.getObjects().forEach((obj) => {
+            const id = obj._pdfEditId || this.ensureObjectId(obj);
+            if (!snapshotIds.has(id)
+                && !obj._isLinkOverlay
+                && !obj._isTableOverlay
+                && !obj._isSearchHighlight) {
+                this.canvas.remove(obj);
+            }
+        });
+
         if (toCreate.length === 0) {
             this.canvas.renderAll();
             return Promise.resolve();
@@ -2304,6 +3158,8 @@ class PDFEditor {
                     if ((obj.type === 'i-text' || obj.type === 'textbox' || obj.type === 'text') && !obj._elementType) {
                         obj._elementType = 'text';
                     }
+                    this.applyTextboxWrapResize(obj);
+                    this.normalizeTextObjectScale(obj);
                 });
                 this.canvas.renderAll();
                 resolve();
@@ -2319,8 +3175,182 @@ class PDFEditor {
         return this.canvas.getActiveObjects();
     }
 
+    getSelectedTextObjects() {
+        const active = this.canvas.getActiveObject();
+        if (active && active.type === 'activeSelection') {
+            return active.getObjects().filter((o) => this.isTextObject(o));
+        }
+        return this.getActiveObjects().filter((o) => this.isTextObject(o));
+    }
+
+    _rectsOverlap(a, b, padding = 2) {
+        return !(
+            a.left + a.width + padding < b.left
+            || b.left + b.width + padding < a.left
+            || a.top + a.height + padding < b.top
+            || b.top + b.height + padding < a.top
+        );
+    }
+
+    /**
+     * Merge 2+ text objects into one Textbox (e.g. after AI OCR line blocks).
+     * Removes associated OCR white-mask rects in the same region.
+     */
+    mergeSelectedTextBlocks(objects) {
+        const texts = (objects || this.getSelectedTextObjects()).filter((o) => this.isTextObject(o));
+        if (texts.length < 2) {
+            return null;
+        }
+
+        const active = this.canvas.getActiveObject();
+        if (active && active.type === 'activeSelection') {
+            this.canvas.discardActiveObject();
+        }
+        texts.forEach((obj) => obj.setCoords());
+
+        const sorted = [...texts].sort((a, b) => {
+            const ra = this._getObjectPageRect(a);
+            const rb = this._getObjectPageRect(b);
+            if (Math.abs(ra.top - rb.top) > 6) {
+                return ra.top - rb.top;
+            }
+            return ra.left - rb.left;
+        });
+
+        const mergedText = sorted
+            .map((obj) => (obj.text || '').replace(/\s+$/, ''))
+            .filter(Boolean)
+            .join('\n');
+
+        if (!mergedText) {
+            return null;
+        }
+
+        let minL = Infinity;
+        let minT = Infinity;
+        let maxR = -Infinity;
+        let maxB = -Infinity;
+        sorted.forEach((obj) => {
+            const r = this._getObjectPageRect(obj);
+            minL = Math.min(minL, r.left);
+            minT = Math.min(minT, r.top);
+            maxR = Math.max(maxR, r.left + r.width);
+            maxB = Math.max(maxB, r.top + r.height);
+        });
+
+        const selectionBounds = { left: minL, top: minT, width: maxR - minL, height: maxB - minT };
+        const toRemove = [...sorted];
+        this.canvas.getObjects().slice().forEach((obj) => {
+            if (toRemove.includes(obj)) {
+                return;
+            }
+            if (obj._elementType === 'ocr_mask' || (obj.origin === 'ocr' && obj.type === 'rect')) {
+                const r = obj.getBoundingRect(true, true);
+                if (this._rectsOverlap(r, selectionBounds, 8)) {
+                    toRemove.push(obj);
+                }
+            }
+        });
+
+        toRemove.forEach((obj) => {
+            if (this.canvas.getObjects().includes(obj)) {
+                this.canvas.remove(obj);
+            }
+        });
+
+        const pad = 6;
+        const fontSize = Math.round(
+            sorted.reduce((sum, obj) => sum + (obj.fontSize || 16), 0) / sorted.length
+        );
+        const sample = sorted[0];
+        const bgSource = sorted.find((o) => o.backgroundColor && o.backgroundColor !== 'transparent');
+        const boxWidth = Math.max(maxR - minL, 200);
+        const lineCount = mergedText.split('\n').length;
+        const boxHeight = Math.max(maxB - minT, lineCount * fontSize * 1.25);
+
+        const mask = new fabric.Rect({
+            left: minL - pad,
+            top: minT - pad,
+            width: boxWidth + pad * 2,
+            height: boxHeight + pad * 2,
+            originX: 'left',
+            originY: 'top',
+            fill: '#ffffff',
+            stroke: 'transparent',
+            strokeWidth: 0,
+            _elementType: 'ocr_mask',
+            origin: 'ocr',
+            selectable: false,
+            evented: false,
+        });
+        this.canvas.add(mask);
+
+        const textbox = new fabric.Textbox(mergedText, {
+            left: minL,
+            top: minT,
+            originX: 'left',
+            originY: 'top',
+            width: boxWidth,
+            fontSize,
+            fontFamily: sample.fontFamily || 'Helvetica',
+            fill: sample.fill || '#111111',
+            backgroundColor: bgSource?.backgroundColor || '#ffffff',
+            lineHeight: sample.lineHeight != null ? sample.lineHeight : 1.25,
+            textAlign: 'left',
+            scaleX: 1,
+            scaleY: 1,
+            editable: true,
+            origin: 'ocr',
+            _elementType: 'text',
+            splitByGrapheme: false,
+        });
+        if (typeof textbox.initDimensions === 'function') {
+            textbox.initDimensions();
+        }
+        this._setObjectOriginPoint(textbox, minL, minT);
+        textbox.setCoords();
+        this.canvas.add(textbox);
+        this._registerCanvasObject(textbox);
+        textbox.bringToFront();
+        this.canvas.setActiveObject(textbox);
+        this.canvas.requestRenderAll();
+        this.assignIdsToAllObjects();
+
+        if (this.onObjectSelected) {
+            this.onObjectSelected([textbox]);
+        }
+
+        return textbox;
+    }
+
     renderAll() {
         this.canvas.renderAll();
+    }
+
+    /**
+     * Rasterize the current canvas (background + objects) for sidebar thumbnails.
+     * @param {number} maxHeight - target output height in pixels (use 2×+ display size for sharp thumbs)
+     */
+    capturePreviewDataUrl(maxHeight) {
+        if (!this.canvas || !this.canvasHeight) {
+            return null;
+        }
+        this.canvas.renderAll();
+        const targetHeight = Math.min(
+            this.canvasHeight,
+            Math.max(1, maxHeight || this.canvasHeight)
+        );
+        const multiplier = targetHeight / this.canvasHeight;
+        try {
+            return this.canvas.toDataURL({
+                format: 'png',
+                quality: 1,
+                multiplier,
+            });
+        } catch (err) {
+            console.warn('Preview capture failed:', err);
+            return null;
+        }
     }
 
     bringToFront(obj) {

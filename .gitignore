@@ -54,5 +54,6 @@ data/unsaved/*
 !data/unsaved/.gitkeep
 data/saved/*
 !data/saved/.gitkeep
+data/ai_settings.json
 sessions_db.json
 sessions_db.json.migrated
