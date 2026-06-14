@@ -60,11 +60,18 @@ class App {
         this.toolbar.onToolChange = (tool) => this._onToolChange(tool);
         this.toolbar.onPropertyChange = (type, prop, value) => this._onPropertyChange(type, prop, value);
         this.toolbar.onFormValueChange = (value) => this._onFormValueChange(value);
-        this.toolbar.onFormFieldSelect = (xref) => this._selectFormField(xref, { focus: this.toolbar.activeTool === 'forms' });
+        this.toolbar.onFormFieldSelect = (xref, options = {}) => this._selectFormField(xref, {
+            focus: this.toolbar.activeTool === 'forms',
+            extend: options.extend,
+            range: options.range,
+        });
         this.toolbar.onFormCreate = (kind) => this._createFormField(kind);
         this.toolbar.onFormDelete = () => this._deleteFormField(this.selectedFormXref);
-        this.formLayer.onFieldSelected = (field) => this._onFormFieldSelected(field);
+        this.toolbar.onFormMatchSizes = (dimension) => this._matchFormFieldSizes(dimension);
+        this.toolbar.onFormPropertiesChange = (properties) => this._onFormPropertiesChange(properties);
+        this.formLayer.onFieldSelected = (field, selectedFields) => this._onFormFieldSelected(field, selectedFields);
         this.formLayer.onFieldChanged = (field) => this._onFormFieldChanged(field);
+        this.formLayer.onFieldsBatchChanged = (fields) => this._onFormFieldsBatchChanged(fields);
         this.formLayer._onFieldDelete = (xref) => this._deleteFormField(xref);
         this._attachEditorCallbacks();
         AISettings.bind();
@@ -2114,7 +2121,7 @@ class App {
     }
 
     _showFormProperties() {
-        this.toolbar.showFormProperties(this.formLayer.getForms(), this.formLayer.getSelectedField());
+        this.toolbar.showFormProperties(this.formLayer.getForms(), this.formLayer.getSelectedFields());
     }
 
     _showContextProperties() {
@@ -2168,20 +2175,27 @@ class App {
 
     _clearFormSelection(refreshPanel = true) {
         this.selectedFormXref = null;
-        this.formLayer.selectField(null, { silent: true });
+        this.formLayer.clearSelection();
         if (refreshPanel && this.toolbar.activeTool === 'forms') {
             this._showFormProperties();
         }
     }
 
     _selectFormField(xref, options = {}) {
-        this.formLayer.selectField(xref, { focus: options.focus });
+        this.formLayer.selectField(xref, {
+            focus: options.focus,
+            extend: options.extend,
+        });
     }
 
-    _onFormFieldSelected(field) {
+    _onFormFieldSelected(field, selectedFields = null) {
         this.selectedFormXref = field?.xref ?? null;
         this._syncCurrentPageFormsState();
-        this._showFormProperties();
+        if (selectedFields) {
+            this.toolbar.showFormProperties(this.formLayer.getForms(), selectedFields);
+        } else {
+            this._showFormProperties();
+        }
     }
 
     _onFormFieldChanged(field) {
@@ -2191,10 +2205,32 @@ class App {
         this._markDirty();
     }
 
+    _onFormFieldsBatchChanged(fields) {
+        this._syncCurrentPageFormsState();
+        this._showFormProperties();
+        this._markDirty();
+        if (fields?.length) {
+            this._showToast(`Resized ${fields.length} field${fields.length === 1 ? '' : 's'} to match`, 'success');
+        }
+    }
+
+    _matchFormFieldSizes(dimension) {
+        const updated = this.formLayer.matchSelectedFieldSizes(dimension);
+        if (!updated.length) {
+            this._showToast('Select two or more fields of the same type first', 'info');
+        }
+    }
+
     _onFormValueChange(value) {
         const field = this.formLayer.getSelectedField();
         if (!field) return;
         this.formLayer.updateFieldValue(field.xref, value);
+    }
+
+    _onFormPropertiesChange(properties) {
+        const field = this.formLayer.getSelectedField();
+        if (!field) return;
+        this.formLayer.updateFieldProperties(field.xref, properties);
     }
 
     async _createFormField(kind) {

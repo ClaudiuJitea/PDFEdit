@@ -1092,15 +1092,34 @@
                     <div class="prop-group">
                         <label class="prop-label">Page Fields</label>
                         <div id="prop-form-list" class="form-field-list"></div>
+                        <p class="form-list-hint">Tip: Ctrl/Cmd+click to select multiple fields of the same type.</p>
+                    </div>
+                    <div id="prop-form-match-group" class="prop-group" style="display:none">
+                        <label class="prop-label">Match Size</label>
+                        <span id="prop-form-match-label" class="form-match-hint"></span>
+                        <div class="form-match-grid">
+                            <button id="btn-form-match-width" class="secondary-btn form-match-btn" type="button">
+                                <i data-lucide="move-horizontal" class="btn-icon-sm"></i>
+                                Match Width
+                            </button>
+                            <button id="btn-form-match-height" class="secondary-btn form-match-btn" type="button">
+                                <i data-lucide="move-vertical" class="btn-icon-sm"></i>
+                                Match Height
+                            </button>
+                            <button id="btn-form-match-both" class="secondary-btn form-match-btn form-match-btn-primary" type="button">
+                                <i data-lucide="maximize-2" class="btn-icon-sm"></i>
+                                Match Both
+                            </button>
+                        </div>
                     </div>
                     <div id="prop-form-detail" class="form-detail" style="display:none">
                         <div class="prop-group">
                             <label class="prop-label">Field Name</label>
-                            <input type="text" id="prop-form-name" class="prop-input" disabled>
+                            <input type="text" id="prop-form-name" class="prop-input">
                         </div>
                         <div class="prop-group">
                             <label class="prop-label">Label</label>
-                            <input type="text" id="prop-form-label" class="prop-input" disabled>
+                            <input type="text" id="prop-form-label" class="prop-input">
                         </div>
                         <div class="prop-group">
                             <label class="prop-label">Type</label>
@@ -1113,6 +1132,10 @@
                         <div id="prop-form-choice-group" class="prop-group" style="display:none">
                             <label class="prop-label">Selected Option</label>
                             <select id="prop-form-choice" class="prop-select"></select>
+                        </div>
+                        <div id="prop-form-choices-edit-group" class="prop-group" style="display:none">
+                            <label class="prop-label">Edit Dropdown Options (One per line: value|label or just label)</label>
+                            <textarea id="prop-form-choices-edit" class="prop-textarea" rows="5" placeholder="Option 1&#10;Option 2&#10;value3|Label 3"></textarea>
                         </div>
                         <div id="prop-form-bool-group" class="prop-group" style="display:none">
                             <label class="prop-label">State</label>

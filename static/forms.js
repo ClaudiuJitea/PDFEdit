@@ -4,6 +4,7 @@ class PDFFormLayer {
         this.layer = null;
         this.forms = [];
         this.selectedXref = null;
+        this.selectedXrefs = [];
         this.zoom = 1;
         this.baseWidth = 0;
         this.baseHeight = 0;
@@ -12,6 +13,7 @@ class PDFFormLayer {
         this.interactive = false;
         this.onFieldSelected = null;
         this.onFieldChanged = null;
+        this.onFieldsBatchChanged = null;
         this._onFieldDelete = null;
         this.dragState = null;
         this._boundPointerMove = (event) => this._onPointerMove(event);
@@ -22,7 +24,7 @@ class PDFFormLayer {
         this.container = container;
         this.layer = layer;
         this.layer.addEventListener('click', (event) => {
-            if (event.target === this.layer && this.interactive) {
+            if (event.target === this.layer && this.interactive && !event.ctrlKey && !event.metaKey) {
                 this.selectField(null);
             }
         });
@@ -40,9 +42,10 @@ class PDFFormLayer {
         this.baseWidth = width || 0;
         this.baseHeight = height || 0;
 
-        if (!this.forms.some((field) => field.xref === this.selectedXref)) {
-            this.selectedXref = null;
-        }
+        this.selectedXrefs = this.selectedXrefs.filter((xref) =>
+            this.forms.some((field) => field.xref === xref)
+        );
+        this.selectedXref = this.selectedXrefs[0] ?? null;
 
         this.render();
     }
@@ -77,6 +80,21 @@ class PDFFormLayer {
     render() {
         if (!this.layer) return;
 
+        const activeElement = document.activeElement;
+        let activeXref = null;
+        let selectionStart = 0;
+        let selectionEnd = 0;
+
+        if (activeElement && activeElement.closest('.form-layer-field')) {
+            activeXref = activeElement.closest('.form-layer-field').dataset.xref;
+            if (activeElement.type === 'text') {
+                try {
+                    selectionStart = activeElement.selectionStart;
+                    selectionEnd = activeElement.selectionEnd;
+                } catch (e) {}
+            }
+        }
+
         this.layer.innerHTML = '';
         this.layer.style.width = `${this.baseWidth * this.zoom}px`;
         this.layer.style.height = `${this.baseHeight * this.zoom}px`;
@@ -85,8 +103,11 @@ class PDFFormLayer {
         this.forms.forEach((field) => {
             const wrapper = document.createElement('div');
             wrapper.className = `form-layer-field form-layer-field-${field.widget_kind || 'text'}`;
-            if (field.xref === this.selectedXref) {
+            if (this.selectedXrefs.includes(field.xref)) {
                 wrapper.classList.add('selected');
+                if (field.xref === this.selectedXref) {
+                    wrapper.classList.add('selected-primary');
+                }
             }
 
             const bbox = field.bbox || [0, 0, 0, 0];
@@ -102,8 +123,13 @@ class PDFFormLayer {
 
             wrapper.addEventListener('pointerdown', (event) => {
                 event.stopPropagation();
+                if (this._handleModifierClick(field, event)) return;
                 const control = event.target.closest('.form-layer-control');
-                this.selectField(field.xref, { focus: Boolean(control), silent: Boolean(control) });
+                if (control) {
+                    this.selectField(field.xref, { focus: true, silent: false });
+                    return;
+                }
+                this.selectField(field.xref, { focus: false, silent: false });
             });
 
             wrapper.appendChild(this._buildControl(field));
@@ -119,6 +145,18 @@ class PDFFormLayer {
 
         this.syncPosition();
         this.setInteractive(this.interactive);
+
+        if (activeXref) {
+            const newActive = this.layer.querySelector(`[data-xref="${activeXref}"] .form-layer-control`);
+            if (newActive) {
+                newActive.focus();
+                if (newActive.type === 'text' && typeof selectionStart === 'number') {
+                    try {
+                        newActive.setSelectionRange(selectionStart, selectionEnd);
+                    } catch (e) {}
+                }
+            }
+        }
     }
 
     _buildControl(field) {
@@ -139,7 +177,11 @@ class PDFFormLayer {
             });
 
             select.value = field.value ?? '';
-            select.addEventListener('focus', () => this.selectField(field.xref, { silent: true }));
+            select.addEventListener('focus', () => {
+                if (this.selectedXref !== field.xref) {
+                    this.selectField(field.xref, { focus: true });
+                }
+            });
             select.addEventListener('change', () => this.updateFieldValue(field.xref, select.value));
             return select;
         }
@@ -152,9 +194,16 @@ class PDFFormLayer {
             input.type = field.widget_kind === 'radio' ? 'radio' : 'checkbox';
             input.className = 'form-layer-control';
             input.checked = Boolean(field.value);
-            input.addEventListener('focus', () => this.selectField(field.xref, { silent: true }));
+            input.addEventListener('focus', () => {
+                if (this.selectedXref !== field.xref) {
+                    this.selectField(field.xref, { focus: true });
+                }
+            });
             input.addEventListener('change', () => this.updateFieldValue(field.xref, input.checked));
-            input.addEventListener('pointerdown', (event) => event.stopPropagation());
+            input.addEventListener('pointerdown', (event) => {
+                if (this._handleModifierClick(field, event)) return;
+                event.stopPropagation();
+            });
 
             toggle.appendChild(input);
             return toggle;
@@ -165,10 +214,31 @@ class PDFFormLayer {
         input.className = 'form-layer-control';
         input.value = field.value ?? '';
         input.placeholder = field.field_label || field.field_name || 'Text field';
-        input.addEventListener('focus', () => this.selectField(field.xref, { silent: true }));
-        input.addEventListener('input', () => this.updateFieldValue(field.xref, input.value));
-        input.addEventListener('pointerdown', (event) => event.stopPropagation());
+        input.addEventListener('focus', () => {
+            if (this.selectedXref !== field.xref) {
+                this.selectField(field.xref, { focus: true });
+            }
+        });
+        input.addEventListener('blur', () => {
+            if (input.value === '') {
+                input.value = field.value ?? '';
+            }
+        });
+        input.addEventListener('input', () => {
+            this.updateFieldValue(field.xref, input.value);
+        });
+        input.addEventListener('pointerdown', (event) => {
+            if (this._handleModifierClick(field, event)) return;
+            event.stopPropagation();
+        });
         return input;
+    }
+
+    _handleModifierClick(field, event) {
+        if (!event.ctrlKey && !event.metaKey && !event.shiftKey) return false;
+        event.preventDefault();
+        this.selectField(field.xref, { extend: true, silent: false });
+        return true;
     }
 
     _buildHandle(kind, title) {
@@ -284,18 +354,55 @@ class PDFFormLayer {
         return this.forms.find((field) => field.xref === this.selectedXref) || null;
     }
 
+    getSelectedFields() {
+        if (!this.selectedXrefs.length) return [];
+        const set = new Set(this.selectedXrefs);
+        return this.forms
+            .filter((field) => set.has(field.xref))
+            .sort((a, b) => this.selectedXrefs.indexOf(a.xref) - this.selectedXrefs.indexOf(b.xref));
+    }
+
+    clearSelection() {
+        this.selectedXrefs = [];
+        this.selectedXref = null;
+        this.render();
+    }
+
     selectField(xref, options = {}) {
-        this.selectedXref = xref;
+        const extend = Boolean(options.extend);
+        const target = (xref === null || xref === undefined) ? null : this.forms.find((field) => field.xref === xref);
+
+        if (target === null) {
+            this.selectedXrefs = [];
+        } else if (extend) {
+            const primary = this.getSelectedField();
+            if (primary && primary.widget_kind !== target.widget_kind) {
+                this.selectedXrefs = [target.xref];
+            } else if (this.selectedXrefs.includes(target.xref)) {
+                if (this.selectedXrefs.length === 1) {
+                    this.selectedXrefs = [];
+                } else {
+                    this.selectedXrefs = this.selectedXrefs.filter((value) => value !== target.xref);
+                }
+            } else {
+                this.selectedXrefs = [...this.selectedXrefs, target.xref];
+            }
+        } else {
+            this.selectedXrefs = [target.xref];
+        }
+
+        this.selectedXref = this.selectedXrefs[0] ?? null;
+
         this.render();
 
         const selectedField = this.getSelectedField();
-        if (options.focus && selectedField) {
+        if (options.focus && selectedField && !extend) {
             const active = this.layer.querySelector(`[data-xref="${selectedField.xref}"] .form-layer-control`);
             active?.focus();
         }
 
         if (!options.silent && this.onFieldSelected) {
-            this.onFieldSelected(selectedField);
+            this.onFieldSelected(selectedField, this.getSelectedFields());
         }
 
         return selectedField;
@@ -315,6 +422,18 @@ class PDFFormLayer {
             target.value = value;
         }
 
+        this.render();
+
+        if (!options.silent && this.onFieldChanged) {
+            this.onFieldChanged(this.getSelectedField() || target);
+        }
+    }
+
+    updateFieldProperties(xref, properties, options = {}) {
+        const target = this.forms.find((field) => field.xref === xref);
+        if (!target) return;
+
+        Object.assign(target, properties);
         this.render();
 
         if (!options.silent && this.onFieldChanged) {
@@ -348,17 +467,79 @@ class PDFFormLayer {
         const index = this.forms.findIndex((field) => field.xref === xref);
         if (index === -1) return false;
         this.forms.splice(index, 1);
-        if (this.selectedXref === xref) {
-            this.selectedXref = null;
+        if (this.selectedXrefs.includes(xref)) {
+            this.selectedXrefs = this.selectedXrefs.filter((value) => value !== xref);
+            this.selectedXref = this.selectedXrefs[0] ?? null;
         }
         this.render();
         return true;
+    }
+
+    /**
+     * Resize all selected fields of the same type as the primary selection to
+     * share an equal width and/or height. The primary field supplies the
+     * reference dimensions; other selected fields keep their top-left corner.
+     *
+     * @param {'width'|'height'|'both'} dimension
+     * @returns {Array} the fields that were modified
+     */
+    matchSelectedFieldSizes(dimension = 'both') {
+        const selected = this.getSelectedFields();
+        if (selected.length < 2) return [];
+
+        const primary = selected[0];
+        const primaryKind = primary.widget_kind || 'text';
+        const primaryBbox = primary.bbox || [0, 0, 0, 0];
+        const refWidth = Math.max(this.minFieldSize, primaryBbox[2] - primaryBbox[0]);
+        const refHeight = Math.max(this.minFieldSize, primaryBbox[3] - primaryBbox[1]);
+
+        const updated = [];
+        selected.forEach((field) => {
+            if (field === primary) return;
+            if ((field.widget_kind || 'text') !== primaryKind) return;
+
+            const bbox = Array.isArray(field.bbox) ? [...field.bbox] : [0, 0, this.minFieldSize, this.minFieldSize];
+            const left = bbox[0];
+            const top = bbox[1];
+            const currentWidth = Math.max(this.minFieldSize, bbox[2] - bbox[0]);
+            const currentHeight = Math.max(this.minFieldSize, bbox[3] - bbox[1]);
+            const nextWidth = dimension === 'height' ? currentWidth : refWidth;
+            const nextHeight = dimension === 'width' ? currentHeight : refHeight;
+
+            const nextBbox = [left, top, left + nextWidth, top + nextHeight];
+            const sizeChanged = nextBbox[2] !== bbox[2] || nextBbox[3] !== bbox[3];
+            if (!sizeChanged) return;
+
+            field.bbox = nextBbox;
+            updated.push(field);
+        });
+
+        if (updated.length === 0) return [];
+
+        this.render();
+
+        if (this.onFieldsBatchChanged) {
+            this.onFieldsBatchChanged(updated.map((field) => ({
+                ...field,
+                bbox: [...field.bbox],
+            })));
+        } else if (this.onFieldChanged) {
+            updated.forEach((field) => {
+                this.onFieldChanged({
+                    ...field,
+                    bbox: [...field.bbox],
+                });
+            });
+        }
+
+        return updated;
     }
 
     clear() {
         this.dragState = null;
         this.forms = [];
         this.selectedXref = null;
+        this.selectedXrefs = [];
         this.baseWidth = 0;
         this.baseHeight = 0;
         this.render();

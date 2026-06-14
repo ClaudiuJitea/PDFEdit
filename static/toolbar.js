@@ -7,6 +7,8 @@ class Toolbar {
         this.onFormFieldSelect = null;
         this.onFormCreate = null;
         this.onFormDelete = null;
+        this.onFormMatchSizes = null;
+        this.onFormPropertiesChange = null;
         this._boundElements = false;
     }
 
@@ -261,11 +263,59 @@ class Toolbar {
             });
         }
 
+        const nameInput = document.getElementById('prop-form-name');
+        if (nameInput) {
+            nameInput.addEventListener('input', () => {
+                if (this.onFormPropertiesChange) {
+                    this.onFormPropertiesChange({ field_name: nameInput.value });
+                }
+            });
+        }
+
+        const labelInput = document.getElementById('prop-form-label');
+        if (labelInput) {
+            labelInput.addEventListener('input', () => {
+                if (this.onFormPropertiesChange) {
+                    this.onFormPropertiesChange({ field_label: labelInput.value });
+                }
+            });
+        }
+
+        const choicesEditInput = document.getElementById('prop-form-choices-edit');
+        if (choicesEditInput) {
+            choicesEditInput.addEventListener('input', () => {
+                if (this.onFormPropertiesChange) {
+                    const lines = choicesEditInput.value.split('\n');
+                    const choices = [];
+                    lines.forEach((line) => {
+                        const trimmed = line.trim();
+                        if (!trimmed) return;
+                        const idx = trimmed.indexOf('|');
+                        if (idx !== -1) {
+                            choices.push({
+                                value: trimmed.substring(0, idx).trim(),
+                                label: trimmed.substring(idx + 1).trim()
+                            });
+                        } else {
+                            choices.push({
+                                value: trimmed,
+                                label: trimmed
+                            });
+                        }
+                    });
+                    this.onFormPropertiesChange({ choice_values: choices });
+                }
+            });
+        }
+
         if (fieldList) {
             fieldList.addEventListener('click', (event) => {
                 const button = event.target.closest('[data-form-xref]');
                 if (!button || !this.onFormFieldSelect) return;
-                this.onFormFieldSelect(Number.parseInt(button.dataset.formXref, 10));
+                this.onFormFieldSelect(Number.parseInt(button.dataset.formXref, 10), {
+                    extend: event.ctrlKey || event.metaKey,
+                    range: event.shiftKey,
+                });
             });
         }
 
@@ -283,6 +333,18 @@ class Toolbar {
                 if (this.onFormDelete) this.onFormDelete();
             });
         }
+
+        [
+            ['btn-form-match-width', 'width'],
+            ['btn-form-match-height', 'height'],
+            ['btn-form-match-both', 'both'],
+        ].forEach(([id, dimension]) => {
+            const button = document.getElementById(id);
+            if (!button) return;
+            button.addEventListener('click', () => {
+                if (this.onFormMatchSizes) this.onFormMatchSizes(dimension);
+            });
+        });
     }
 
     _setControlValue(controlId, rawValue, emitChange = false) {
@@ -604,7 +666,7 @@ class Toolbar {
         document.getElementById('prop-page-height').value = Math.round(pageHeight);
     }
 
-    showFormProperties(forms, selectedField = null) {
+    showFormProperties(forms, selectedFields = null) {
         this._hideAllProps();
 
         const panel = document.getElementById('props-form');
@@ -612,6 +674,8 @@ class Toolbar {
         const selected = document.getElementById('prop-form-selected');
         const fieldList = document.getElementById('prop-form-list');
         const detail = document.getElementById('prop-form-detail');
+        const matchGroup = document.getElementById('prop-form-match-group');
+        const matchLabel = document.getElementById('prop-form-match-label');
         const textGroup = document.getElementById('prop-form-text-group');
         const choiceGroup = document.getElementById('prop-form-choice-group');
         const boolGroup = document.getElementById('prop-form-bool-group');
@@ -621,10 +685,30 @@ class Toolbar {
         panel.style.display = 'block';
 
         const formList = Array.isArray(forms) ? forms : [];
+
+        const selectedArray = Array.isArray(selectedFields)
+            ? selectedFields
+            : (selectedFields ? [selectedFields] : []);
+        const primaryField = selectedArray[0] || null;
+        const selectedXrefSet = new Set(selectedArray.map((field) => field.xref));
+
+        const selectedCount = selectedArray.length;
+        const selectedTypeKey = primaryField?.widget_kind || primaryField?.field_type_string || '';
+        const sameTypeSelectedCount = selectedTypeKey
+            ? selectedArray.filter((field) => (field.widget_kind || field.field_type_string) === selectedTypeKey).length
+            : 0;
+
         count.textContent = `${formList.length} field${formList.length === 1 ? '' : 's'} on this page`;
-        selected.textContent = selectedField
-            ? `${selectedField.field_label || selectedField.field_name}`
-            : (formList.length ? 'Select a field to inspect its value' : 'No interactive form fields on this page');
+
+        if (selectedCount > 1) {
+            selected.textContent = `${selectedCount} fields selected (${selectedTypeKey || 'mixed'})`;
+        } else if (primaryField) {
+            selected.textContent = `${primaryField.field_label || primaryField.field_name}`;
+        } else {
+            selected.textContent = formList.length
+                ? 'Select a field to inspect its value'
+                : 'No interactive form fields on this page';
+        }
 
         fieldList.innerHTML = '';
         formList.forEach((field) => {
@@ -632,7 +716,8 @@ class Toolbar {
             button.type = 'button';
             button.className = 'form-field-item';
             button.dataset.formXref = String(field.xref);
-            button.classList.toggle('active', selectedField?.xref === field.xref);
+            button.classList.toggle('active', selectedXrefSet.has(field.xref));
+            button.classList.toggle('primary', field.xref === primaryField?.xref);
             button.innerHTML = `
                 <span class="form-field-item-label">${field.field_label || field.field_name}</span>
                 <span class="form-field-item-meta">${field.field_type_string || field.widget_kind}</span>
@@ -640,37 +725,65 @@ class Toolbar {
             fieldList.appendChild(button);
         });
 
-        if (!selectedField) {
+        if (matchGroup) {
+            const canMatch = sameTypeSelectedCount >= 2;
+            matchGroup.style.display = canMatch ? 'block' : 'none';
+            if (canMatch && matchLabel) {
+                matchLabel.textContent = `${sameTypeSelectedCount} ${selectedTypeKey} field${sameTypeSelectedCount === 1 ? '' : 's'} selected. Matches the primary field size.`;
+            }
+        }
+
+        if (!primaryField) {
             detail.style.display = 'none';
             return;
         }
 
         detail.style.display = 'block';
-        document.getElementById('prop-form-name').value = selectedField.field_name || '';
-        document.getElementById('prop-form-label').value = selectedField.field_label || selectedField.field_name || '';
-        document.getElementById('prop-form-type').value = selectedField.field_type_string || selectedField.widget_kind || '';
+        
+        const nameInput = document.getElementById('prop-form-name');
+        if (nameInput && document.activeElement !== nameInput) {
+            nameInput.value = primaryField.field_name || '';
+        }
+        const labelInput = document.getElementById('prop-form-label');
+        if (labelInput && document.activeElement !== labelInput) {
+            labelInput.value = primaryField.field_label || primaryField.field_name || '';
+        }
+        document.getElementById('prop-form-type').value = primaryField.field_type_string || primaryField.widget_kind || '';
 
         textGroup.style.display = 'none';
         choiceGroup.style.display = 'none';
+        const choicesEditGroup = document.getElementById('prop-form-choices-edit-group');
+        const choicesEditInput = document.getElementById('prop-form-choices-edit');
+        if (choicesEditGroup) choicesEditGroup.style.display = 'none';
         boolGroup.style.display = 'none';
 
-        if (selectedField.widget_kind === 'choice' || selectedField.widget_kind === 'listbox') {
+        if (primaryField.widget_kind === 'choice' || primaryField.widget_kind === 'listbox') {
             choiceGroup.style.display = 'block';
             choiceInput.innerHTML = '';
-            (selectedField.choice_values || []).forEach((option) => {
+            (primaryField.choice_values || []).forEach((option) => {
                 const el = document.createElement('option');
                 el.value = option.value;
                 el.textContent = option.label;
                 choiceInput.appendChild(el);
             });
-            choiceInput.value = selectedField.value ?? '';
-        } else if (selectedField.widget_kind === 'checkbox' || selectedField.widget_kind === 'radio') {
+            choiceInput.value = primaryField.value ?? '';
+
+            if (choicesEditGroup && choicesEditInput) {
+                choicesEditGroup.style.display = 'block';
+                if (document.activeElement !== choicesEditInput) {
+                    const choicesStr = (primaryField.choice_values || [])
+                        .map(opt => opt.value === opt.label ? opt.label : `${opt.value}|${opt.label}`)
+                        .join('\n');
+                    choicesEditInput.value = choicesStr;
+                }
+            }
+        } else if (primaryField.widget_kind === 'checkbox' || primaryField.widget_kind === 'radio') {
             boolGroup.style.display = 'block';
-            boolLabel.textContent = selectedField.widget_kind === 'radio' ? 'Selected' : 'Checked';
-            document.getElementById('prop-form-bool').checked = Boolean(selectedField.value);
+            boolLabel.textContent = primaryField.widget_kind === 'radio' ? 'Selected' : 'Checked';
+            document.getElementById('prop-form-bool').checked = Boolean(primaryField.value);
         } else {
             textGroup.style.display = 'block';
-            document.getElementById('prop-form-text').value = selectedField.value ?? '';
+            document.getElementById('prop-form-text').value = primaryField.value ?? '';
         }
     }
 

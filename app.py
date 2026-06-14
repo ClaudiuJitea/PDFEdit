@@ -1545,7 +1545,30 @@ def _apply_single_widget_value(widget, value):
     field_type = int(widget.field_type or 0)
 
     if field_type == fitz.PDF_WIDGET_TYPE_TEXT:
-        widget.field_value = "" if value is None else str(value)
+        val = "" if value is None else str(value)
+        widget.field_value = val
+        
+        val_lower = val.strip().lower()
+        is_default = (
+            val_lower == (widget.field_label or "").strip().lower() or
+            val_lower == (widget.field_name or "").strip().lower() or
+            val_lower.startswith("text field") or
+            val_lower.startswith("field") or
+            val_lower in [
+                "nume", "prenume", "name", "surname", "first name", "last name", 
+                "email", "telefon", "phone", "adresa", "address", "cnp", "cui", 
+                "iban", "data", "date", "semnatura", "signature"
+            ]
+        )
+        
+        if is_default and val:
+            escaped_val = val.replace('\\', '\\\\').replace('"', '\\"')
+            widget.script_focus = f'if (event.value === "{escaped_val}") event.value = "";'
+            widget.script_blur = f'if (event.value === "") event.value = "{escaped_val}";'
+        else:
+            widget.script_focus = None
+            widget.script_blur = None
+            
         return True
 
     if field_type in (fitz.PDF_WIDGET_TYPE_COMBOBOX, fitz.PDF_WIDGET_TYPE_LISTBOX):
@@ -1621,6 +1644,30 @@ def apply_form_updates(doc, page_num, form_updates):
                 widget.update()
                 page = refresh_page_handle(doc, page, page_num)
                 widget = page.load_widget(xref) or widget
+
+        # Update metadata properties (field_name, field_label, choice_values) if changed
+        updated_meta = False
+        if "field_name" in item:
+            new_name = str(item["field_name"])
+            if widget.field_name != new_name:
+                widget.field_name = new_name
+                updated_meta = True
+        if "field_label" in item:
+            new_label = str(item["field_label"])
+            if widget.field_label != new_label:
+                widget.field_label = new_label
+                updated_meta = True
+        if "choice_values" in item and isinstance(item["choice_values"], list):
+            new_choices = [[str(opt.get("value", "")), str(opt.get("label", ""))] for opt in item["choice_values"]]
+            current_choices = [[str(c[0]), str(c[1])] for c in (getattr(widget, "choice_values", None) or [])]
+            if current_choices != new_choices:
+                widget.choice_values = new_choices
+                updated_meta = True
+
+        if updated_meta:
+            widget.update()
+            page = refresh_page_handle(doc, page, page_num)
+            widget = page.load_widget(xref) or widget
 
         field_type = int(widget.field_type or 0)
         if field_type == fitz.PDF_WIDGET_TYPE_RADIOBUTTON:
@@ -2314,6 +2361,15 @@ def get_session(session_id):
     return entry
 
 
+def _reopen_session_doc(path, entry):
+    doc = fitz.open(path)
+    password = entry.get("password")
+    if doc.needs_pass and password:
+        doc.authenticate(password)
+    entry["doc"] = doc
+    return doc
+
+
 def save_session_doc(session_id):
     entry = sessions.get(session_id)
     if not entry:
@@ -2329,8 +2385,18 @@ def save_session_doc(session_id):
             doc.saveIncr()
         else:
             doc.save(path)
-    except Exception:
-        doc.save(path)
+    except Exception as exc:
+        print(f"Incremental save failed ({exc}); rewriting {path}", file=sys.stderr, flush=True)
+        tmp_path = f"{path}.rewrite.tmp"
+        try:
+            doc.save(tmp_path, garbage=4, deflate=True)
+        except Exception:
+            if os.path.isfile(tmp_path):
+                os.remove(tmp_path)
+            raise
+        doc.close()
+        os.replace(tmp_path, path)
+        doc = _reopen_session_doc(path, entry)
     store.write_meta(session_id, {"page_count": len(doc)})
     return path
 
@@ -2672,7 +2738,13 @@ def get_page_forms(session_id, page_num):
             print(f"Form creation error: {exc}", file=sys.stderr, flush=True)
             return jsonify({"error": "Failed to create form field"}), 500
 
-        save_session_doc(session_id)
+        try:
+            save_session_doc(session_id)
+        except Exception as exc:
+            print(f"Form save error: {exc}", file=sys.stderr, flush=True)
+            return jsonify({"error": "Failed to save form field"}), 500
+
+        page = entry["doc"][page_num]
         forms = extract_page_widgets(page)
         created_form = forms[-1] if forms else None
         thumbnail = render_page_thumbnail(page)
@@ -2703,7 +2775,13 @@ def delete_page_form(session_id, page_num, xref):
         return jsonify({"error": "Form field not found"}), 404
 
     page.delete_widget(widget)
-    save_session_doc(session_id)
+    try:
+        save_session_doc(session_id)
+    except Exception as exc:
+        print(f"Form delete save error: {exc}", file=sys.stderr, flush=True)
+        return jsonify({"error": "Failed to save after deleting form field"}), 500
+
+    page = entry["doc"][page_num]
     forms = extract_page_widgets(page)
     thumbnail = render_page_thumbnail(page)
     return jsonify({
