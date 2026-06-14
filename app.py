@@ -55,7 +55,7 @@ WIDGET_KIND_MAP = {
     fitz.PDF_WIDGET_TYPE_CHECKBOX: "checkbox",
     fitz.PDF_WIDGET_TYPE_RADIOBUTTON: "radio",
     fitz.PDF_WIDGET_TYPE_COMBOBOX: "choice",
-    fitz.PDF_WIDGET_TYPE_LISTBOX: "choice",
+    fitz.PDF_WIDGET_TYPE_LISTBOX: "listbox",
 }
 
 WIDGET_TYPE_MAP = {
@@ -1405,7 +1405,8 @@ def make_default_widget_rect(page, widget_kind, index):
     if widget_kind == "text":
         return fitz.Rect(left, top, min(left + 220, page.rect.width - 72), top + 28)
     if widget_kind in ("choice", "listbox"):
-        return fitz.Rect(left, top, min(left + 180, page.rect.width - 72), top + 28)
+        height = 82 if widget_kind == "listbox" else 28
+        return fitz.Rect(left, top, min(left + 180, page.rect.width - 72), min(top + height, page.rect.height - 36))
     if widget_kind == "checkbox":
         return fitz.Rect(left, top, left + 18, top + 18)
     if widget_kind == "radio":
@@ -1442,7 +1443,11 @@ def create_form_widget(page, widget_kind):
 
     if normalized_kind in ("choice", "listbox"):
         widget.choice_values = ["Option 1", "Option 2", "Option 3"]
-        widget.field_value = "Option 1"
+        if normalized_kind == "listbox":
+            widget.field_value = ["Option 1"]
+            widget.field_flags = int(getattr(widget, "field_flags", 0) or 0) | (1 << 21)
+        else:
+            widget.field_value = "Option 1"
 
     if normalized_kind in ("checkbox", "radio"):
         widget.text_font = "ZaDb"
@@ -1490,7 +1495,16 @@ def extract_page_widgets(page, scale=RENDER_SCALE):
                 raw_value = widget.field_value
                 value = raw_value == on_value or raw_value is True
             else:
-                value = _coerce_widget_text_value(widget.field_value)
+                if field_type == fitz.PDF_WIDGET_TYPE_LISTBOX:
+                    raw_value = widget.field_value
+                    if isinstance(raw_value, (list, tuple)):
+                        value = [str(item) for item in raw_value]
+                    elif raw_value in (None, ""):
+                        value = []
+                    else:
+                        value = [str(raw_value)]
+                else:
+                    value = _coerce_widget_text_value(widget.field_value)
 
             widgets.append({
                 "type": "widget",
@@ -1571,13 +1585,23 @@ def _apply_single_widget_value(widget, value):
             
         return True
 
-    if field_type in (fitz.PDF_WIDGET_TYPE_COMBOBOX, fitz.PDF_WIDGET_TYPE_LISTBOX):
+    if field_type == fitz.PDF_WIDGET_TYPE_COMBOBOX:
         choice_values = normalize_widget_choice_values(getattr(widget, "choice_values", None))
         value_text = "" if value is None else str(value)
         allowed_values = {item["value"] for item in choice_values}
         if allowed_values and value_text not in allowed_values and value_text != "":
             return False
         widget.field_value = value_text
+        return True
+
+    if field_type == fitz.PDF_WIDGET_TYPE_LISTBOX:
+        choice_values = normalize_widget_choice_values(getattr(widget, "choice_values", None))
+        allowed_values = {item["value"] for item in choice_values}
+        raw_values = value if isinstance(value, list) else ([] if value in (None, "") else [value])
+        selected_values = [str(item) for item in raw_values]
+        if allowed_values:
+            selected_values = [item for item in selected_values if item in allowed_values]
+        widget.field_value = selected_values
         return True
 
     if field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX:
@@ -1659,7 +1683,10 @@ def apply_form_updates(doc, page_num, form_updates):
                 updated_meta = True
         if "choice_values" in item and isinstance(item["choice_values"], list):
             new_choices = [[str(opt.get("value", "")), str(opt.get("label", ""))] for opt in item["choice_values"]]
-            current_choices = [[str(c[0]), str(c[1])] for c in (getattr(widget, "choice_values", None) or [])]
+            current_choices = [
+                [choice["value"], choice["label"]]
+                for choice in normalize_widget_choice_values(getattr(widget, "choice_values", None))
+            ]
             if current_choices != new_choices:
                 widget.choice_values = new_choices
                 updated_meta = True

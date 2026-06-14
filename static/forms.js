@@ -36,7 +36,8 @@ class PDFFormLayer {
                 ...field,
                 bbox: Array.isArray(field.bbox) ? [...field.bbox] : [0, 0, this.minFieldSize, this.minFieldSize],
                 pdf_bbox: Array.isArray(field.pdf_bbox) ? [...field.pdf_bbox] : null,
-                choice_values: Array.isArray(field.choice_values) ? field.choice_values.map((option) => ({ ...option })) : [],
+                choice_values: this._normalizeChoiceValues(field.choice_values),
+                value: this._normalizeValueForField(field, field.value),
             }))
             : [];
         this.baseWidth = width || 0;
@@ -164,7 +165,8 @@ class PDFFormLayer {
             const select = document.createElement('select');
             select.className = 'form-layer-control';
 
-             if (field.widget_kind === 'listbox' || (field.field_type_string || '').toLowerCase().includes('list')) {
+            if (this._isListbox(field)) {
+                select.multiple = true;
                 const visibleOptions = Math.max(2, Math.min((field.choice_values || []).length || 2, Math.floor(((field.bbox?.[3] || 0) - (field.bbox?.[1] || 0)) / 28)));
                 select.size = visibleOptions;
             }
@@ -176,13 +178,18 @@ class PDFFormLayer {
                 select.appendChild(el);
             });
 
-            select.value = field.value ?? '';
+            this._syncChoiceControlValue(select, field);
             select.addEventListener('focus', () => {
                 if (this.selectedXref !== field.xref) {
                     this.selectField(field.xref, { focus: true });
                 }
             });
-            select.addEventListener('change', () => this.updateFieldValue(field.xref, select.value));
+            select.addEventListener('change', () => {
+                const value = select.multiple
+                    ? Array.from(select.selectedOptions).map((option) => option.value)
+                    : select.value;
+                this.updateFieldValue(field.xref, value);
+            });
             return select;
         }
 
@@ -193,6 +200,9 @@ class PDFFormLayer {
             const input = document.createElement('input');
             input.type = field.widget_kind === 'radio' ? 'radio' : 'checkbox';
             input.className = 'form-layer-control';
+            if (field.widget_kind === 'radio') {
+                input.name = `pdf-form-radio-${field.field_name || field.xref}`;
+            }
             input.checked = Boolean(field.value);
             input.addEventListener('focus', () => {
                 if (this.selectedXref !== field.xref) {
@@ -337,6 +347,80 @@ class PDFFormLayer {
         return Math.max(11, Math.min(16, Math.round(height * 0.42)));
     }
 
+    _isListbox(field) {
+        return field?.widget_kind === 'listbox' || (field?.field_type_string || '').toLowerCase().includes('list');
+    }
+
+    _normalizeChoiceValues(choiceValues) {
+        if (!Array.isArray(choiceValues)) return [];
+        return choiceValues
+            .map((option) => {
+                if (Array.isArray(option)) {
+                    const value = option[0] ?? '';
+                    return {
+                        value: String(value),
+                        label: String(option[1] ?? value),
+                    };
+                }
+                if (option && typeof option === 'object') {
+                    const value = option.value ?? option.label ?? '';
+                    return {
+                        value: String(value),
+                        label: String(option.label ?? value),
+                    };
+                }
+                return {
+                    value: String(option ?? ''),
+                    label: String(option ?? ''),
+                };
+            })
+            .filter((option) => option.value !== '' || option.label !== '');
+    }
+
+    _normalizeValueForField(field, value) {
+        const kind = field?.widget_kind || 'text';
+        if (kind === 'checkbox' || kind === 'radio') {
+            return Boolean(value);
+        }
+        if (this._isListbox(field)) {
+            const values = Array.isArray(value) ? value : (value ? [value] : []);
+            const allowed = new Set((field.choice_values || []).map((option) => String(option.value)));
+            return values
+                .map((item) => String(item))
+                .filter((item) => !allowed.size || allowed.has(item));
+        }
+        if (kind === 'choice') {
+            const valueText = value == null ? '' : String(value);
+            const allowed = new Set((field.choice_values || []).map((option) => String(option.value)));
+            return allowed.size && valueText && !allowed.has(valueText) ? '' : valueText;
+        }
+        return value == null ? '' : String(value);
+    }
+
+    _coerceChoiceValueAfterOptionsChange(field) {
+        const options = field.choice_values || [];
+        const allowed = new Set(options.map((option) => String(option.value)));
+        if (this._isListbox(field)) {
+            field.value = this._normalizeValueForField(field, field.value);
+            return;
+        }
+        if (field.widget_kind === 'choice') {
+            const current = field.value == null ? '' : String(field.value);
+            field.value = !current || allowed.has(current) ? current : (options[0]?.value ?? '');
+        }
+    }
+
+    _syncChoiceControlValue(select, field) {
+        if (select.multiple) {
+            const selectedValues = new Set(this._normalizeValueForField(field, field.value));
+            Array.from(select.options).forEach((option) => {
+                option.selected = selectedValues.has(option.value);
+            });
+            return;
+        }
+        select.value = this._normalizeValueForField(field, field.value);
+    }
+
     _clamp(value, min, max) {
         return Math.min(Math.max(value, min), max);
     }
@@ -346,7 +430,8 @@ class PDFFormLayer {
             ...field,
             bbox: Array.isArray(field.bbox) ? [...field.bbox] : field.bbox,
             pdf_bbox: Array.isArray(field.pdf_bbox) ? [...field.pdf_bbox] : field.pdf_bbox,
-            choice_values: Array.isArray(field.choice_values) ? field.choice_values.map((option) => ({ ...option })) : [],
+            choice_values: this._normalizeChoiceValues(field.choice_values),
+            value: Array.isArray(field.value) ? [...field.value] : field.value,
         }));
     }
 
@@ -412,14 +497,15 @@ class PDFFormLayer {
         const target = this.forms.find((field) => field.xref === xref);
         if (!target) return;
 
-        if (target.widget_kind === 'radio' && value) {
+        const normalizedValue = this._normalizeValueForField(target, value);
+        if (target.widget_kind === 'radio' && normalizedValue) {
             this.forms.forEach((field) => {
                 if (field.widget_kind === 'radio' && field.field_name === target.field_name) {
                     field.value = field.xref === xref;
                 }
             });
         } else {
-            target.value = value;
+            target.value = normalizedValue;
         }
 
         this.render();
@@ -433,7 +519,15 @@ class PDFFormLayer {
         const target = this.forms.find((field) => field.xref === xref);
         if (!target) return;
 
-        Object.assign(target, properties);
+        const nextProperties = { ...properties };
+        if (Object.prototype.hasOwnProperty.call(nextProperties, 'choice_values')) {
+            nextProperties.choice_values = this._normalizeChoiceValues(nextProperties.choice_values);
+        }
+
+        Object.assign(target, nextProperties);
+        if (Object.prototype.hasOwnProperty.call(nextProperties, 'choice_values')) {
+            this._coerceChoiceValueAfterOptionsChange(target);
+        }
         this.render();
 
         if (!options.silent && this.onFieldChanged) {

@@ -3956,10 +3956,16 @@ class App {
                 const key = field.field_name;
                 if (!(key in suggestions)) return;
                 const val = suggestions[key];
-                if (field.widget_kind === 'text' || field.widget_kind === 'choice' || field.widget_kind === 'listbox') {
+                if (field.widget_kind === 'text' || field.widget_kind === 'choice') {
                     this.formLayer.updateFieldValue(field.xref, String(val ?? ''), { silent: true });
                     applied += 1;
-                } else if (field.widget_kind === 'checkbox') {
+                } else if (field.widget_kind === 'listbox') {
+                    const values = Array.isArray(val)
+                        ? val
+                        : String(val ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+                    this.formLayer.updateFieldValue(field.xref, values, { silent: true });
+                    applied += 1;
+                } else if (field.widget_kind === 'checkbox' || field.widget_kind === 'radio') {
                     const checked = /^(true|yes|1|on|checked)$/i.test(String(val));
                     this.formLayer.updateFieldValue(field.xref, checked, { silent: true });
                     applied += 1;

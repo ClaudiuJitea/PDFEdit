@@ -253,7 +253,11 @@ class Toolbar {
 
         if (choiceInput) {
             choiceInput.addEventListener('change', () => {
-                if (this.onFormValueChange) this.onFormValueChange(choiceInput.value);
+                if (!this.onFormValueChange) return;
+                const value = choiceInput.multiple
+                    ? Array.from(choiceInput.selectedOptions).map((option) => option.value)
+                    : choiceInput.value;
+                this.onFormValueChange(value);
             });
         }
 
@@ -285,25 +289,9 @@ class Toolbar {
         if (choicesEditInput) {
             choicesEditInput.addEventListener('input', () => {
                 if (this.onFormPropertiesChange) {
-                    const lines = choicesEditInput.value.split('\n');
-                    const choices = [];
-                    lines.forEach((line) => {
-                        const trimmed = line.trim();
-                        if (!trimmed) return;
-                        const idx = trimmed.indexOf('|');
-                        if (idx !== -1) {
-                            choices.push({
-                                value: trimmed.substring(0, idx).trim(),
-                                label: trimmed.substring(idx + 1).trim()
-                            });
-                        } else {
-                            choices.push({
-                                value: trimmed,
-                                label: trimmed
-                            });
-                        }
+                    this.onFormPropertiesChange({
+                        choice_values: this._parseChoiceEditorValue(choicesEditInput.value),
                     });
-                    this.onFormPropertiesChange({ choice_values: choices });
                 }
             });
         }
@@ -377,6 +365,101 @@ class Toolbar {
                 input.dispatchEvent(new Event('change', { bubbles: true }));
             }
         }
+    }
+
+    _parseChoiceEditorValue(rawValue) {
+        return String(rawValue || '')
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .map((line) => {
+                const idx = line.indexOf('|');
+                if (idx === -1) {
+                    return { value: line, label: line };
+                }
+                const value = line.substring(0, idx).trim();
+                const label = line.substring(idx + 1).trim() || value;
+                return { value, label };
+            })
+            .filter((option) => option.value !== '');
+    }
+
+    _formatChoiceEditorValue(choiceValues) {
+        return (choiceValues || [])
+            .map((option) => {
+                const value = option?.value ?? '';
+                const label = option?.label ?? value;
+                return value === label ? String(label) : `${value}|${label}`;
+            })
+            .join('\n');
+    }
+
+    _setSelectValue(select, field) {
+        if (!select || !field) return;
+        const value = field.value;
+        if (select.multiple) {
+            const selectedValues = new Set(Array.isArray(value) ? value.map(String) : (value ? [String(value)] : []));
+            Array.from(select.options).forEach((option) => {
+                option.selected = selectedValues.has(option.value);
+            });
+            return;
+        }
+        select.value = value ?? '';
+    }
+
+    _getFormKind(field) {
+        const kind = (field?.widget_kind || '').toLowerCase();
+        if (['text', 'checkbox', 'radio', 'choice', 'listbox'].includes(kind)) return kind;
+        const type = (field?.field_type_string || '').toLowerCase();
+        if (type.includes('check')) return 'checkbox';
+        if (type.includes('radio')) return 'radio';
+        if (type.includes('combo') || type.includes('drop')) return 'choice';
+        if (type.includes('list')) return 'listbox';
+        return 'text';
+    }
+
+    _getFormKindBadge(kind) {
+        const labels = {
+            text: 'TXT',
+            checkbox: 'CHK',
+            radio: 'RAD',
+            choice: 'SEL',
+            listbox: 'LST',
+        };
+        return labels[kind] || 'FLD';
+    }
+
+    _getFormTypeLabel(field) {
+        const kind = this._getFormKind(field);
+        const labels = {
+            text: 'Text',
+            checkbox: 'Checkbox',
+            radio: 'Radio',
+            choice: 'Dropdown',
+            listbox: 'List box',
+        };
+        return labels[kind] || field?.field_type_string || 'Field';
+    }
+
+    _getFormValuePreview(field) {
+        const kind = this._getFormKind(field);
+        const value = field?.value;
+        if (kind === 'checkbox') return value ? 'Checked' : 'Unchecked';
+        if (kind === 'radio') return value ? 'Selected' : 'Not selected';
+        if (kind === 'listbox') {
+            const values = Array.isArray(value) ? value : (value ? [value] : []);
+            return values.length ? values.join(', ') : 'No options selected';
+        }
+        if (kind === 'choice') return value ? String(value) : 'No option selected';
+        return value ? String(value) : 'Empty';
+    }
+
+    _getFormGeometryPreview(field) {
+        const bbox = Array.isArray(field?.bbox) ? field.bbox : null;
+        if (!bbox || bbox.length !== 4) return 'No position';
+        const width = Math.max(0, Math.round(bbox[2] - bbox[0]));
+        const height = Math.max(0, Math.round(bbox[3] - bbox[1]));
+        return `${width} x ${height}`;
     }
 
     _syncChipGroup(controlId, rawValue) {
@@ -680,6 +763,7 @@ class Toolbar {
         const choiceGroup = document.getElementById('prop-form-choice-group');
         const boolGroup = document.getElementById('prop-form-bool-group');
         const choiceInput = document.getElementById('prop-form-choice');
+        const choiceLabel = choiceGroup?.querySelector('.prop-label');
         const boolLabel = document.getElementById('prop-form-bool-label');
 
         panel.style.display = 'block';
@@ -712,15 +796,31 @@ class Toolbar {
 
         fieldList.innerHTML = '';
         formList.forEach((field) => {
+            const kind = this._getFormKind(field);
+            const typeLabel = this._getFormTypeLabel(field);
+            const valuePreview = this._getFormValuePreview(field);
+            const geometryPreview = this._getFormGeometryPreview(field);
+            const title = `${field.field_label || field.field_name || 'Form field'} (${typeLabel})`;
             const button = document.createElement('button');
             button.type = 'button';
-            button.className = 'form-field-item';
+            button.className = `form-field-item form-field-item-${kind}`;
             button.dataset.formXref = String(field.xref);
+            button.title = title;
             button.classList.toggle('active', selectedXrefSet.has(field.xref));
             button.classList.toggle('primary', field.xref === primaryField?.xref);
             button.innerHTML = `
-                <span class="form-field-item-label">${field.field_label || field.field_name}</span>
-                <span class="form-field-item-meta">${field.field_type_string || field.widget_kind}</span>
+                <span class="form-field-item-main">
+                    <span class="form-field-kind" aria-hidden="true">${this._escapeHtml(this._getFormKindBadge(kind))}</span>
+                    <span class="form-field-item-body">
+                        <span class="form-field-item-label">${this._escapeHtml(field.field_label || field.field_name || 'Unnamed field')}</span>
+                        <span class="form-field-item-name">${this._escapeHtml(field.field_name || `xref ${field.xref}`)}</span>
+                    </span>
+                    <span class="form-field-item-type">${this._escapeHtml(typeLabel)}</span>
+                </span>
+                <span class="form-field-item-meta">
+                    <span class="form-field-value">${this._escapeHtml(valuePreview)}</span>
+                    <span class="form-field-geometry">${this._escapeHtml(geometryPreview)}</span>
+                </span>
             `;
             fieldList.appendChild(button);
         });
@@ -759,22 +859,28 @@ class Toolbar {
 
         if (primaryField.widget_kind === 'choice' || primaryField.widget_kind === 'listbox') {
             choiceGroup.style.display = 'block';
+            if (choiceLabel) {
+                choiceLabel.textContent = primaryField.widget_kind === 'listbox'
+                    ? 'Selected Options'
+                    : 'Selected Option';
+            }
             choiceInput.innerHTML = '';
+            choiceInput.multiple = primaryField.widget_kind === 'listbox';
+            choiceInput.size = primaryField.widget_kind === 'listbox'
+                ? Math.max(3, Math.min((primaryField.choice_values || []).length || 3, 8))
+                : 1;
             (primaryField.choice_values || []).forEach((option) => {
                 const el = document.createElement('option');
                 el.value = option.value;
                 el.textContent = option.label;
                 choiceInput.appendChild(el);
             });
-            choiceInput.value = primaryField.value ?? '';
+            this._setSelectValue(choiceInput, primaryField);
 
             if (choicesEditGroup && choicesEditInput) {
                 choicesEditGroup.style.display = 'block';
                 if (document.activeElement !== choicesEditInput) {
-                    const choicesStr = (primaryField.choice_values || [])
-                        .map(opt => opt.value === opt.label ? opt.label : `${opt.value}|${opt.label}`)
-                        .join('\n');
-                    choicesEditInput.value = choicesStr;
+                    choicesEditInput.value = this._formatChoiceEditorValue(primaryField.choice_values || []);
                 }
             }
         } else if (primaryField.widget_kind === 'checkbox' || primaryField.widget_kind === 'radio') {
