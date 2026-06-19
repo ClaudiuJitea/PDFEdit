@@ -225,6 +225,24 @@
                         <div id="canvas-loading" class="canvas-loading">
                             <div class="skeleton-shimmer"></div>
                         </div>
+                        <div id="ai-ocr-busy" class="ai-ocr-busy" style="display:none" aria-hidden="true">
+                            <div class="ai-ocr-busy-card">
+                                <div class="ai-ocr-busy-visual">
+                                    <div class="ai-ocr-doc">
+                                        <div class="ai-ocr-doc-line"></div>
+                                        <div class="ai-ocr-doc-line"></div>
+                                        <div class="ai-ocr-doc-line"></div>
+                                        <div class="ai-ocr-doc-line"></div>
+                                        <div class="ai-ocr-doc-line"></div>
+                                        <div class="ai-ocr-scanline"></div>
+                                    </div>
+                                    <div class="ai-ocr-ring"></div>
+                                </div>
+                                <div class="ai-ocr-busy-title">AI OCR in progress</div>
+                                <div class="ai-ocr-busy-subtitle" id="ai-ocr-busy-status">Reading page content…</div>
+                                <div class="ai-ocr-busy-bar"><span></span></div>
+                            </div>
+                        </div>
                         <div id="canvas-error" class="canvas-error" style="display:none">
                             <i data-lucide="alert-circle" class="error-icon"></i>
                             <p>Failed to load page</p>
@@ -576,43 +594,31 @@
                             <button type="button" class="secondary-btn ai-text-action-btn" data-ai-action="shorten" disabled>Shorten</button>
                             <button type="button" class="secondary-btn ai-text-action-btn" data-ai-action="expand" disabled>Expand</button>
                         </div>
-                        <div class="prop-group" style="margin-top:8px">
-                            <label class="prop-label" for="ai-translate-lang">Translate to</label>
-                            <div class="prop-row">
-                                <select id="ai-translate-lang" class="prop-select flex-1" disabled>
-                                    <option value="English">English</option>
-                                    <option value="Spanish">Spanish</option>
-                                    <option value="French">French</option>
-                                    <option value="German">German</option>
-                                    <option value="Italian">Italian</option>
-                                    <option value="Portuguese">Portuguese</option>
-                                    <option value="Dutch">Dutch</option>
-                                    <option value="Polish">Polish</option>
-                                    <option value="Romanian">Romanian</option>
-                                    <option value="Russian">Russian</option>
-                                    <option value="Chinese (Simplified)">Chinese (Simplified)</option>
-                                    <option value="Chinese (Traditional)">Chinese (Traditional)</option>
-                                    <option value="Japanese">Japanese</option>
-                                    <option value="Korean">Korean</option>
-                                    <option value="Arabic">Arabic</option>
-                                    <option value="Hindi">Hindi</option>
-                                    <option value="Turkish">Turkish</option>
-                                    <option value="Ukrainian">Ukrainian</option>
-                                    <option value="Czech">Czech</option>
-                                    <option value="Swedish">Swedish</option>
-                                    <option value="Danish">Danish</option>
-                                    <option value="Norwegian">Norwegian</option>
-                                    <option value="Finnish">Finnish</option>
-                                    <option value="Greek">Greek</option>
-                                    <option value="Hebrew">Hebrew</option>
-                                    <option value="Vietnamese">Vietnamese</option>
-                                    <option value="Thai">Thai</option>
-                                    <option value="Indonesian">Indonesian</option>
-                                    <option value="__custom__">Other…</option>
-                                </select>
-                                <button type="button" class="secondary-btn ai-text-action-btn" data-ai-action="translate" disabled>Translate</button>
+                        <div class="prop-group ai-translate" id="ai-translate-group" style="margin-top:8px">
+                            <div class="ai-translate-head">
+                                <i data-lucide="languages" class="ai-translate-head-icon"></i>
+                                <span class="prop-label">Translate to</span>
                             </div>
-                            <input type="text" id="ai-translate-lang-custom" class="prop-input" placeholder="Type language (e.g. Hungarian)" style="display:none; margin-top:6px" disabled>
+                            <div class="ai-translate-combo" id="ai-translate-combo">
+                                <button type="button" id="ai-translate-trigger" class="ai-translate-trigger" aria-haspopup="listbox" aria-expanded="false" disabled>
+                                    <span class="ai-translate-trigger-flag" id="ai-translate-flag">🇬🇧</span>
+                                    <span class="ai-translate-trigger-name" id="ai-translate-name">English</span>
+                                    <i data-lucide="chevron-down" class="ai-translate-caret"></i>
+                                </button>
+                                <div class="ai-translate-panel" id="ai-translate-panel" hidden>
+                                    <div class="ai-translate-search">
+                                        <i data-lucide="search" class="ai-translate-search-icon"></i>
+                                        <input type="text" id="ai-translate-search" class="ai-translate-search-input" placeholder="Search language…" autocomplete="off">
+                                    </div>
+                                    <div class="ai-translate-list" id="ai-translate-list" role="listbox"></div>
+                                </div>
+                            </div>
+                            <input type="text" id="ai-translate-lang-custom" class="prop-input ai-translate-custom-input" placeholder="Type language (e.g. Hungarian)" style="display:none" disabled>
+                            <input type="hidden" id="ai-translate-lang" value="English">
+                            <button type="button" class="secondary-btn ai-text-action-btn ai-translate-go" data-ai-action="translate" disabled>
+                                <i data-lucide="languages" class="btn-icon-sm"></i>
+                                <span>Translate</span>
+                            </button>
                         </div>
                     </div>
                 </div>

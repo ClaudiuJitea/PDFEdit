@@ -1,3 +1,34 @@
+const AI_TRANSLATE_LANGUAGES = [
+    { value: 'English', flag: '🇬🇧' },
+    { value: 'Spanish', flag: '🇪🇸' },
+    { value: 'French', flag: '🇫🇷' },
+    { value: 'German', flag: '🇩🇪' },
+    { value: 'Italian', flag: '🇮🇹' },
+    { value: 'Portuguese', flag: '🇵🇹' },
+    { value: 'Dutch', flag: '🇳🇱' },
+    { value: 'Polish', flag: '🇵🇱' },
+    { value: 'Romanian', flag: '🇷🇴' },
+    { value: 'Russian', flag: '🇷🇺' },
+    { value: 'Chinese (Simplified)', flag: '🇨🇳' },
+    { value: 'Chinese (Traditional)', flag: '🇹🇼' },
+    { value: 'Japanese', flag: '🇯🇵' },
+    { value: 'Korean', flag: '🇰🇷' },
+    { value: 'Arabic', flag: '🇸🇦' },
+    { value: 'Hindi', flag: '🇮🇳' },
+    { value: 'Turkish', flag: '🇹🇷' },
+    { value: 'Ukrainian', flag: '🇺🇦' },
+    { value: 'Czech', flag: '🇨🇿' },
+    { value: 'Swedish', flag: '🇸🇪' },
+    { value: 'Danish', flag: '🇩🇰' },
+    { value: 'Norwegian', flag: '🇳🇴' },
+    { value: 'Finnish', flag: '🇫🇮' },
+    { value: 'Greek', flag: '🇬🇷' },
+    { value: 'Hebrew', flag: '🇮🇱' },
+    { value: 'Vietnamese', flag: '🇻🇳' },
+    { value: 'Thai', flag: '🇹🇭' },
+    { value: 'Indonesian', flag: '🇮🇩' },
+];
+
 class App {
     constructor() {
         this.sessionId = null;
@@ -102,8 +133,14 @@ class App {
         });
         const translateLang = document.getElementById('ai-translate-lang');
         const translateLangCustom = document.getElementById('ai-translate-lang-custom');
+        const translateSearch = document.getElementById('ai-translate-search');
+        const translateTrigger = document.getElementById('ai-translate-trigger');
+        const translateGroup = document.getElementById('ai-translate-group');
         if (translateLang) translateLang.disabled = !enabled;
         if (translateLangCustom) translateLangCustom.disabled = !enabled;
+        if (translateSearch) translateSearch.disabled = !enabled;
+        if (translateTrigger) translateTrigger.disabled = !enabled;
+        if (translateGroup) translateGroup.classList.toggle('disabled', !enabled);
     }
 
     _attachEditorCallbacks() {
@@ -171,6 +208,8 @@ class App {
             formLayer: document.getElementById('form-layer'),
             canvasLoading: document.getElementById('canvas-loading'),
             canvasError: document.getElementById('canvas-error'),
+            aiOcrBusy: document.getElementById('ai-ocr-busy'),
+            aiOcrBusyStatus: document.getElementById('ai-ocr-busy-status'),
             dropOverlay: document.getElementById('drop-overlay'),
             fileInput: document.getElementById('file-input'),
             imageInput: document.getElementById('image-input'),
@@ -3619,12 +3658,48 @@ class App {
             btn.disabled = busy || !AISettings.configured;
             btn.setAttribute('aria-busy', busy ? 'true' : 'false');
         }
-        if (this.els.canvasLoading) {
-            if (busy) {
-                this.els.canvasLoading.style.display = 'flex';
-            } else if (!this.isLoading) {
-                this.els.canvasLoading.style.display = 'none';
-            }
+        const overlay = this.els.aiOcrBusy;
+        if (overlay) {
+            overlay.style.display = busy ? 'flex' : 'none';
+            overlay.setAttribute('aria-hidden', busy ? 'false' : 'true');
+        }
+        if (busy) {
+            this._startAiOcrStatusCycle();
+        } else {
+            this._stopAiOcrStatusCycle();
+        }
+    }
+
+    _startAiOcrStatusCycle() {
+        this._stopAiOcrStatusCycle();
+        const messages = [
+            'Reading page content…',
+            'Analyzing text and layout…',
+            'Recognizing characters…',
+            'Finalizing results…',
+        ];
+        const statusEl = this.els.aiOcrBusyStatus;
+        let i = 0;
+        if (statusEl) {
+            statusEl.textContent = messages[0];
+            statusEl.style.opacity = '1';
+        }
+        this._aiOcrStatusTimer = setInterval(() => {
+            i = (i + 1) % messages.length;
+            if (!statusEl) return;
+            statusEl.style.opacity = '0';
+            setTimeout(() => {
+                if (this._aiOcrStatusTimer === null) return;
+                statusEl.textContent = messages[i];
+                statusEl.style.opacity = '1';
+            }, 180);
+        }, 2500);
+    }
+
+    _stopAiOcrStatusCycle() {
+        if (this._aiOcrStatusTimer) {
+            clearInterval(this._aiOcrStatusTimer);
+            this._aiOcrStatusTimer = null;
         }
     }
 
@@ -3842,31 +3917,183 @@ class App {
     }
 
     _bindAiTranslateLanguage() {
-        const sel = document.getElementById('ai-translate-lang');
-        const custom = document.getElementById('ai-translate-lang-custom');
-        if (!sel) return;
+        const comboEl = document.getElementById('ai-translate-combo');
+        const triggerEl = document.getElementById('ai-translate-trigger');
+        const panelEl = document.getElementById('ai-translate-panel');
+        const listEl = document.getElementById('ai-translate-list');
+        const searchEl = document.getElementById('ai-translate-search');
+        const customEl = document.getElementById('ai-translate-lang-custom');
+        const hiddenEl = document.getElementById('ai-translate-lang');
+        const flagEl = document.getElementById('ai-translate-flag');
+        const nameEl = document.getElementById('ai-translate-name');
+        if (!comboEl || !listEl || !hiddenEl) return;
 
-        const syncCustomVisibility = () => {
-            const showCustom = sel.value === '__custom__';
-            if (custom) {
-                custom.style.display = showCustom ? 'block' : 'none';
-                if (showCustom) custom.focus();
+        // Portal the dropdown to <body> so position:fixed anchors to the viewport.
+        // The .properties-panel uses backdrop-filter, which would otherwise become
+        // the containing block for fixed descendants and break the coordinates.
+        if (panelEl && panelEl.parentElement !== document.body) {
+            document.body.appendChild(panelEl);
+        }
+
+        const LANGS = AI_TRANSLATE_LANGUAGES;
+        const CUSTOM_VALUE = '__custom__';
+        let isOpen = false;
+
+        const renderList = (filter = '') => {
+            const q = filter.trim().toLowerCase();
+            listEl.innerHTML = '';
+            const matches = LANGS.filter((l) => !q || l.value.toLowerCase().includes(q));
+            matches.forEach((l) => {
+                const item = document.createElement('button');
+                item.type = 'button';
+                item.className = 'ai-translate-item';
+                item.dataset.value = l.value;
+                item.dataset.flag = l.flag;
+                item.setAttribute('role', 'option');
+                item.innerHTML =
+                    `<span class="ai-translate-item-flag">${l.flag}</span>` +
+                    `<span class="ai-translate-item-name">${l.value}</span>`;
+                if (hiddenEl.value === l.value) {
+                    item.classList.add('selected');
+                    item.setAttribute('aria-selected', 'true');
+                }
+                item.addEventListener('click', () => selectLanguage(l.value, l.flag));
+                listEl.appendChild(item);
+            });
+            const showCustom =
+                !q || 'other…'.includes(q) || 'custom'.includes(q) || 'other'.includes(q);
+            if (showCustom) {
+                const customItem = document.createElement('button');
+                customItem.type = 'button';
+                customItem.className = 'ai-translate-item ai-translate-item-other';
+                customItem.dataset.value = CUSTOM_VALUE;
+                customItem.setAttribute('role', 'option');
+                customItem.innerHTML =
+                    `<span class="ai-translate-item-name">Other…</span>`;
+                if (hiddenEl.value === CUSTOM_VALUE) {
+                    customItem.classList.add('selected');
+                    customItem.setAttribute('aria-selected', 'true');
+                }
+                customItem.addEventListener('click', () => selectLanguage(CUSTOM_VALUE));
+                listEl.appendChild(customItem);
+            }
+            if (matches.length === 0 && !showCustom) {
+                const empty = document.createElement('div');
+                empty.className = 'ai-translate-empty';
+                empty.textContent = 'No languages match';
+                listEl.appendChild(empty);
             }
         };
 
-        sel.addEventListener('change', syncCustomVisibility);
-        syncCustomVisibility();
+        const updateTrigger = (value, flag) => {
+            if (flagEl) flagEl.textContent = flag;
+            if (nameEl) {
+                nameEl.textContent = value === CUSTOM_VALUE ? 'Other…' : value;
+            }
+        };
+
+        const selectLanguage = (value, flag, closePanel = true) => {
+            hiddenEl.value = value;
+            updateTrigger(value, flag || '');
+            const showCustom = value === CUSTOM_VALUE;
+            if (customEl) {
+                customEl.style.display = showCustom ? 'block' : 'none';
+                if (showCustom) customEl.focus();
+            }
+            listEl.querySelectorAll('.ai-translate-item').forEach((el) => {
+                const isSel = el.dataset.value === value;
+                el.classList.toggle('selected', isSel);
+                if (isSel) el.setAttribute('aria-selected', 'true');
+                else el.removeAttribute('aria-selected');
+            });
+            if (closePanel && isOpen) closeDropdown();
+        };
+
+        const positionPanel = () => {
+            if (!panelEl || !triggerEl) return;
+            const rect = triggerEl.getBoundingClientRect();
+            const estHeight = Math.min(window.innerHeight * 0.55, 320);
+            let top = rect.bottom + 4;
+            if (top + estHeight > window.innerHeight - 8) {
+                top = rect.top - 4 - estHeight;
+            }
+            panelEl.style.left = rect.left + 'px';
+            panelEl.style.top = Math.max(8, top) + 'px';
+            panelEl.style.width = rect.width + 'px';
+        };
+
+        const onOutsideScroll = (e) => {
+            // Ignore scrolls coming from inside the dropdown (e.g. the language list scrollbar).
+            if (panelEl && panelEl.contains(e.target)) return;
+            closeDropdown();
+        };
+        const onResize = () => closeDropdown();
+
+        const openDropdown = () => {
+            if (isOpen || triggerEl?.disabled) return;
+            isOpen = true;
+            if (panelEl) panelEl.hidden = false;
+            comboEl.classList.add('open');
+            if (triggerEl) triggerEl.setAttribute('aria-expanded', 'true');
+            positionPanel();
+            if (searchEl) {
+                searchEl.value = '';
+                renderList();
+                requestAnimationFrame(() => searchEl.focus());
+            }
+            document.addEventListener('click', onDocClick);
+            window.addEventListener('scroll', onOutsideScroll, true);
+            window.addEventListener('resize', onResize);
+        };
+
+        const closeDropdown = () => {
+            if (!isOpen) return;
+            isOpen = false;
+            if (panelEl) panelEl.hidden = true;
+            comboEl.classList.remove('open');
+            if (triggerEl) triggerEl.setAttribute('aria-expanded', 'false');
+            document.removeEventListener('click', onDocClick);
+            window.removeEventListener('scroll', onOutsideScroll, true);
+            window.removeEventListener('resize', onResize);
+        };
+
+        const onDocClick = (e) => {
+            if (comboEl?.contains(e.target) || panelEl?.contains(e.target)) return;
+            closeDropdown();
+        };
+
+        if (triggerEl) {
+            triggerEl.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (isOpen) closeDropdown();
+                else openDropdown();
+            });
+        }
+        if (searchEl) {
+            searchEl.addEventListener('input', () => renderList(searchEl.value));
+            searchEl.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') {
+                    closeDropdown();
+                    triggerEl?.focus();
+                } else if (e.key === 'Enter') {
+                    const first = listEl.querySelector('.ai-translate-item');
+                    if (first) first.click();
+                }
+            });
+        }
+
+        renderList();
+        if (customEl) {
+            customEl.style.display = hiddenEl.value === CUSTOM_VALUE ? 'block' : 'none';
+        }
     }
 
     _getAiTranslateTargetLanguage() {
         const sel = document.getElementById('ai-translate-lang');
         if (!sel) return 'English';
-        if (sel.tagName === 'SELECT') {
-            if (sel.value === '__custom__') {
-                const custom = document.getElementById('ai-translate-lang-custom')?.value?.trim();
-                return custom || 'English';
-            }
-            return sel.value;
+        if (sel.value === '__custom__') {
+            const custom = document.getElementById('ai-translate-lang-custom')?.value?.trim();
+            return custom || 'English';
         }
         return (sel.value || 'English').trim();
     }
