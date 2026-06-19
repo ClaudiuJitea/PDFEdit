@@ -77,11 +77,25 @@ class PDFEditor {
         };
         this._linkDrawMode = false;
         this._objectIdSeq = 0;
+        this._tableIdSeq = 0;
         this.pendingOcrText = null;
+        this.tableDefaults = {
+            rows: 3,
+            cols: 3,
+            fill: '#ffffff',
+            stroke: '#333333',
+            strokeWidth: 1,
+            lineStyle: 'solid',
+            textLayer: 'above',
+        };
         this._undoProps = [
             '_elementType', '_isRedaction', 'origin', 'originalPdfBbox', '_modified',
             '_stickyColor', '_stickyText', '_stickyPinned', '_textCase', '_pdfEditId',
             'stampType', 'stampText', 'stampConfig',
+            '_tableRows', '_tableCols', '_tableFill', '_tableStroke', '_tableStrokeWidth', '_tableLineStyle',
+            '_tableCells', '_tableWidth', '_tableHeight', '_tableId', '_tableTextLayer',
+            '_tableRowHeights', '_tableColWidths',
+            '_cellRow', '_cellCol', '_isTableCellText', '_isTableCellImage', '_isTableCellContent',
         ];
     }
 
@@ -140,7 +154,12 @@ class PDFEditor {
     captureObjectPositions(objects) {
         const targets = objects && objects.length
             ? objects
-            : this.canvas.getObjects().filter((obj) => !obj._isLinkOverlay && !obj._isTableOverlay && !obj._isSearchHighlight);
+            : this.canvas.getObjects().filter((obj) => (
+                !obj._isLinkOverlay
+                && !obj._isTableOverlay
+                && !obj._isSearchHighlight
+                && !obj._isTableResizeHandle
+            ));
         return targets.map((obj) => {
             const point = this._objectOriginPoint(obj);
             const entry = {
@@ -221,9 +240,11 @@ class PDFEditor {
         this.canvas.backgroundImage = null;
 
         this.canvas.on('selection:created', (e) => {
+            this._syncAllTableResizeHandleVisibility();
             if (this.onObjectSelected) this.onObjectSelected(e.selected);
         });
         this.canvas.on('selection:updated', (e) => {
+            this._syncAllTableResizeHandleVisibility();
             if (this.onObjectSelected) this.onObjectSelected(e.selected);
         });
         this.canvas.on('text:selection:changed', (e) => {
@@ -232,16 +253,47 @@ class PDFEditor {
             }
         });
         this.canvas.on('text:changed', (e) => {
+            if (e.target?._isTableCellText) {
+                this._enforceTableCellTextBounds(e.target);
+            }
             if (this.onTextSelectionChanged && e.target) {
                 this.onTextSelectionChanged(e.target);
             }
+            if (e.target?._isTableCellText && this.onCanvasModified) {
+                this.onCanvasModified();
+            }
         });
         this.canvas.on('selection:cleared', () => {
+            this._syncAllTableResizeHandleVisibility();
             if (this.onSelectionCleared) this.onSelectionCleared();
         });
-        this.canvas.on('object:scaling', (e) => this._onTextObjectTransform(e));
+        this.canvas.on('object:scaling', (e) => {
+            if (e.target?._isTableCellText) {
+                this._resizeTableCellFromTextObject(e.target);
+                return;
+            }
+            this._onTextObjectTransform(e);
+        });
+        this.canvas.on('object:moving', (e) => {
+            if (e.target?._isTableResizeHandle) {
+                this._constrainTableResizeHandle(e.target);
+            } else if (e.target?._elementType === 'table') {
+                this._onTableFrameMoving(e);
+            } else if (e.target?._tableId) {
+                this._constrainObjectToTableCell(e.target);
+            }
+        });
         this.canvas.on('object:modified', (e) => {
             this._onTextObjectTransform(e);
+            if (e.target?._isTableResizeHandle) {
+                this._applyTableResizeHandle(e.target);
+            } else if (e.target?._elementType === 'table') {
+                delete e.target._moveLastLeft;
+                delete e.target._moveLastTop;
+                this._layoutTableCells(e.target);
+            } else if (e.target && e.target._elementType !== 'table' && !e.target._isTableCellText) {
+                this._tryAttachObjectToTableCell(e.target);
+            }
             if (e.target && e.target.origin === 'pdf') {
                 e.target._modified = true;
             }
@@ -496,10 +548,13 @@ class PDFEditor {
     applyTextboxWrapResize(obj) {
         if (!obj || obj.type !== 'textbox') return obj;
         obj.set({
-            lockScalingY: true,
+            lockScalingY: !obj._isTableCellText,
             lockScalingFlip: true,
-            splitByGrapheme: false,
+            splitByGrapheme: !!obj._isTableCellText,
         });
+        if (obj._isTableCellText && typeof obj.initDimensions === 'function') {
+            obj.initDimensions();
+        }
         if (typeof obj.setControlsVisibility === 'function') {
             obj.setControlsVisibility({
                 mt: false,
@@ -898,6 +953,7 @@ class PDFEditor {
             freehand: 'crosshair',
             highlight: 'crosshair',
             sticky: 'crosshair',
+            table: 'crosshair',
             redaction: 'crosshair',
             stamp: 'crosshair',
             link: 'crosshair',
@@ -923,7 +979,29 @@ class PDFEditor {
         }
 
         if (this.canvas.isDrawingMode) return;
-        if (this.currentTool === 'select' || this.currentTool === 'forms' || this.currentTool === 'eraser') return;
+        if (this.currentTool === 'select') {
+            if (opt.button !== 3 && opt.e?.button !== 2) {
+                const pointer = this.canvas.getPointer(opt.e);
+                const hit = this._findTableCellAtPoint(pointer);
+                if (hit) {
+                    this._clearActiveTableCells(hit.table);
+                    hit.table._activeCell = { row: hit.row, col: hit.col };
+                } else if (opt.target?._isTableCellText || opt.target?._isTableCellImage) {
+                    const table = this._getTableFrame(opt.target._tableId);
+                    if (table) {
+                        this._clearActiveTableCells(table);
+                        table._activeCell = {
+                            row: opt.target._cellRow,
+                            col: opt.target._cellCol,
+                        };
+                    }
+                } else {
+                    this._clearActiveTableCells();
+                }
+            }
+            return;
+        }
+        if (this.currentTool === 'forms' || this.currentTool === 'eraser') return;
         if (this.currentTool === 'link' && !this._linkDrawMode) return;
 
         const hitStamp = this._hitTestStampAtPointer(opt.e);
@@ -939,10 +1017,19 @@ class PDFEditor {
         this.isDrawing = true;
 
         switch (this.currentTool) {
-            case 'text':
-                this._createText(pointer.x, pointer.y);
+            case 'text': {
+                const pointer = this.canvas.getPointer(opt.e);
+                const cellHit = this._findTableCellAtPoint(pointer);
+                if (cellHit) {
+                    this._focusTableCell(cellHit.table, cellHit.row, cellHit.col, true);
+                    this.isDrawing = false;
+                    break;
+                }
+                const textbox = this._createText(pointer.x, pointer.y);
+                this._attachObjectToTableCellIfHit(textbox, pointer, { fit: true });
                 this.isDrawing = false;
                 break;
+            }
             case 'sticky': {
                 const sticky = this._createSticky(pointer.x, pointer.y);
                 this.isDrawing = false;
@@ -951,6 +1038,9 @@ class PDFEditor {
             }
             case 'image':
                 this.isDrawing = false;
+                break;
+            case 'table':
+                this.drawingShape = this._createTablePreview(pointer.x, pointer.y);
                 break;
             case 'rect':
                 this.drawingShape = this._createRect(pointer.x, pointer.y);
@@ -993,7 +1083,7 @@ class PDFEditor {
         const dx = pointer.x - this.startX;
         const dy = pointer.y - this.startY;
 
-        if (['rect', 'highlight', 'redaction', 'link'].includes(this.currentTool)) {
+        if (['rect', 'table', 'highlight', 'redaction', 'link'].includes(this.currentTool)) {
             const left = Math.min(this.startX, pointer.x);
             const top = Math.min(this.startY, pointer.y);
             const width = Math.abs(dx);
@@ -1040,6 +1130,13 @@ class PDFEditor {
                 const canvas_bbox = this.canvasBoundsToCanvasBbox(bounds);
                 this.canvas.remove(this.drawingShape);
                 this.onLinkAreaDrawn({ pdf_bbox, bbox: canvas_bbox });
+            } else if (this.currentTool === 'table') {
+                const bounds = this.drawingShape.getBoundingRect(true, true);
+                this.canvas.remove(this.drawingShape);
+                if (bounds.width >= 5 && bounds.height >= 5) {
+                    const table = this.addTableToCanvas(bounds.left, bounds.top, bounds.width, bounds.height);
+                    this._notifyDrawingComplete(table);
+                }
             } else if (this._isShapeTooSmall(this.drawingShape, this.currentTool)) {
                 this.canvas.remove(this.drawingShape);
             } else {
@@ -1048,6 +1145,7 @@ class PDFEditor {
                     created.selectable = true;
                     created.evented = true;
                 }
+                this._attachObjectToTableCellIfHit(created, { x: this.startX, y: this.startY }, { fit: true });
                 this._notifyDrawingComplete(created);
             }
 
@@ -1057,7 +1155,22 @@ class PDFEditor {
     }
 
     _onDoubleClick(opt) {
+        const pointer = this.canvas.getPointer(opt.e);
+        const cellHit = this._findTableCellAtPoint(pointer);
+        if (cellHit) {
+            this._focusTableCell(cellHit.table, cellHit.row, cellHit.col, true);
+            return;
+        }
+
         const target = opt.target;
+        if (target && target._isTableCellText) {
+            this.canvas.setActiveObject(target);
+            target.enterEditing();
+            target.selectAll();
+            this.canvas.requestRenderAll();
+            return;
+        }
+
         if (target && target._elementType === 'sticky' && this.onStickyDoubleClicked) {
             this.onStickyDoubleClicked(target);
         }
@@ -1102,6 +1215,8 @@ class PDFEditor {
 
         const selected = this.canvas.getActiveObjects();
         const textObjects = selected.filter((o) => this.isTextObject(o));
+        const pointer = opt.e ? this.canvas.getPointer(opt.e) : null;
+        const tableCellHit = pointer ? this._findTableCellAtPoint(pointer) : null;
 
         if (this.onContextMenuRequested && opt.e) {
             this.onContextMenuRequested({
@@ -1111,6 +1226,7 @@ class PDFEditor {
                 target: target,
                 selectedObjects: selected,
                 textObjectCount: textObjects.length,
+                tableCellHit,
             });
         }
     }
@@ -1833,6 +1949,1774 @@ class PDFEditor {
         return '#' + [dr, dg, db].map(c => c.toString(16).padStart(2, '0')).join('');
     }
 
+    setTableDefault(prop, value) {
+        if (!this.tableDefaults || !(prop in this.tableDefaults)) return;
+        if (prop === 'rows' || prop === 'cols') {
+            this.tableDefaults[prop] = Math.max(1, Math.min(20, parseInt(value, 10) || 1));
+            return;
+        }
+        if (prop === 'strokeWidth') {
+            this.tableDefaults[prop] = Math.max(0, parseFloat(value) || 0);
+            return;
+        }
+        if (prop === 'stroke' && value !== 'transparent') {
+            this.tableDefaults[prop] = value;
+            return;
+        }
+        if (prop === 'stroke') {
+            this.tableDefaults[prop] = 'transparent';
+            return;
+        }
+        if (prop === 'textLayer') {
+            this.tableDefaults[prop] = value === 'below' ? 'below' : 'above';
+            return;
+        }
+        if (prop === 'lineStyle') {
+            this.tableDefaults[prop] = ['dashed', 'dotted'].includes(value) ? value : 'solid';
+            return;
+        }
+        this.tableDefaults[prop] = value;
+    }
+
+    _normalizeTableRenderStrokeWidth(strokeWidth) {
+        const n = parseFloat(strokeWidth);
+        if (!Number.isFinite(n) || n < 0) return 1;
+        if (n === 0) return 0.5;
+        return n;
+    }
+
+    _generateTableId() {
+        this._tableIdSeq += 1;
+        return `tbl-${this._tableIdSeq}`;
+    }
+
+    _normalizeTableCellData(cell) {
+        if (cell == null) {
+            return { text: '', image: null };
+        }
+        if (typeof cell === 'string') {
+            return { text: cell, image: null };
+        }
+        return {
+            text: cell.text || '',
+            image: cell.image || null,
+            fontSize: cell.fontSize,
+            fontFamily: cell.fontFamily,
+            fill: cell.fill,
+            textAlign: cell.textAlign,
+        };
+    }
+
+    _normalizeTableCells(rawCells, rows, cols) {
+        return Array.from({ length: rows }, (_, rowIdx) => (
+            Array.from({ length: cols }, (_, colIdx) => (
+                this._normalizeTableCellData(rawCells?.[rowIdx]?.[colIdx])
+            ))
+        ));
+    }
+
+    getTableConfigFromGroup(group) {
+        if (!group || group._elementType !== 'table') return null;
+        return {
+            rows: group._tableRows || 3,
+            cols: group._tableCols || 3,
+            fill: group._tableFill || '#ffffff',
+            stroke: group._tableStroke || '#333333',
+            strokeWidth: group._tableStrokeWidth ?? 1,
+            lineStyle: group._tableLineStyle || 'solid',
+            textLayer: group._tableTextLayer || 'above',
+            rowHeights: group._tableRowHeights || null,
+            colWidths: group._tableColWidths || null,
+            cells: this._serializeTableCells(group),
+        };
+    }
+
+    _normalizeTableSizes(rawSizes, count, total, minSize) {
+        const source = Array.isArray(rawSizes) ? rawSizes : [];
+        const sizes = Array.from({ length: count }, (_, idx) => {
+            const n = parseFloat(source[idx]);
+            return Number.isFinite(n) && n > 0 ? Math.max(minSize, n) : total / Math.max(count, 1);
+        });
+        return sizes;
+    }
+
+    _sumTableSizes(sizes) {
+        return (sizes || []).reduce((sum, size) => sum + (parseFloat(size) || 0), 0);
+    }
+
+    _scaleTableSizesToTotal(sizes, targetTotal, minSize = 30) {
+        const count = sizes?.length || 0;
+        if (!count) return sizes || [];
+
+        const total = Math.max(targetTotal, minSize * count);
+        let scaled = sizes.map((size) => {
+            const n = parseFloat(size);
+            return Number.isFinite(n) && n > 0 ? n : total / count;
+        });
+
+        let sum = this._sumTableSizes(scaled);
+        if (sum <= 0) {
+            return Array.from({ length: count }, () => total / count);
+        }
+
+        scaled = scaled.map((size) => Math.max(minSize, size * total / sum));
+        const drift = total - this._sumTableSizes(scaled);
+        if (Math.abs(drift) > 0.01) {
+            const adjustIdx = scaled.reduce((best, size, idx, arr) => (
+                size > arr[best] ? idx : best
+            ), 0);
+            scaled[adjustIdx] = Math.max(minSize, scaled[adjustIdx] + drift);
+        }
+        return scaled;
+    }
+
+    _fitTableLayout(left, top, colWidths, rowHeights) {
+        const margins = this.getPageContentMargins();
+        const contentWidth = margins.right - margins.left;
+        const contentHeight = margins.bottom - margins.top;
+        const minCol = 30;
+        const minRow = 20;
+
+        let nextLeft = left;
+        let nextTop = top;
+        let nextColWidths = [...colWidths];
+        let nextRowHeights = [...rowHeights];
+        let tableWidth = this._sumTableSizes(nextColWidths);
+        let tableHeight = this._sumTableSizes(nextRowHeights);
+
+        if (tableWidth > contentWidth) {
+            nextColWidths = this._scaleTableSizesToTotal(nextColWidths, contentWidth, minCol);
+            tableWidth = contentWidth;
+            nextLeft = margins.left;
+        } else {
+            const clamped = this._clampRectToMargins(nextLeft, nextTop, tableWidth, tableHeight, margins);
+            nextLeft = clamped.left;
+            nextTop = clamped.top;
+        }
+
+        if (tableHeight > contentHeight) {
+            nextRowHeights = this._scaleTableSizesToTotal(nextRowHeights, contentHeight, minRow);
+            tableHeight = contentHeight;
+            nextTop = margins.top;
+        } else {
+            const clamped = this._clampRectToMargins(nextLeft, nextTop, tableWidth, tableHeight, margins);
+            nextTop = clamped.top;
+        }
+
+        return {
+            left: nextLeft,
+            top: nextTop,
+            colWidths: nextColWidths,
+            rowHeights: nextRowHeights,
+            width: tableWidth,
+            height: tableHeight,
+        };
+    }
+
+    _findTableSizeIndex(sizes, value) {
+        let cursor = 0;
+        for (let idx = 0; idx < sizes.length; idx += 1) {
+            cursor += sizes[idx];
+            if (value <= cursor) return idx;
+        }
+        return Math.max(0, sizes.length - 1);
+    }
+
+    _tableOffsetForIndex(sizes, index) {
+        return sizes.slice(0, index).reduce((sum, size) => sum + size, 0);
+    }
+
+    _getTableMembers(tableId) {
+        if (!this.canvas || !tableId) return [];
+        return this.canvas.getObjects().filter((obj) => obj._tableId === tableId);
+    }
+
+    _getTableFrame(tableId) {
+        return this._getTableMembers(tableId).find((obj) => obj._elementType === 'table') || null;
+    }
+
+    _getTableCellTextbox(tableId, row, col) {
+        return this._getTableMembers(tableId).find((obj) => (
+            obj._isTableCellText && obj._cellRow === row && obj._cellCol === col
+        )) || null;
+    }
+
+    _getTableCellImage(tableId, row, col) {
+        return this._getTableMembers(tableId).find((obj) => (
+            obj._isTableCellImage && obj._cellRow === row && obj._cellCol === col
+        )) || null;
+    }
+
+    _getTableResizeHandles(tableId) {
+        return this._getTableMembers(tableId).filter((obj) => obj._isTableResizeHandle);
+    }
+
+    _tableHasVisibleStroke(table) {
+        const stroke = table?._tableStroke ?? this.tableDefaults?.stroke ?? '#333333';
+        const strokeWidth = table?._tableStrokeWidth ?? this.tableDefaults?.strokeWidth ?? 1;
+        const renderWidth = this._normalizeTableRenderStrokeWidth(strokeWidth);
+        return Boolean(stroke && stroke !== 'transparent' && renderWidth > 0);
+    }
+
+    _isTableInteractionFocused(table) {
+        if (!this.canvas || !table?._tableId) return false;
+        const active = this.canvas.getActiveObject();
+        if (!active) return false;
+        if (active === table) return true;
+        if (active._tableId === table._tableId && !active._isTableResizeHandle) return true;
+        return false;
+    }
+
+    _syncTableResizeHandleVisibility(table) {
+        if (!table?._tableId) return;
+        const show = this._tableHasVisibleStroke(table) || this._isTableInteractionFocused(table);
+        this._getTableResizeHandles(table._tableId).forEach((handle) => {
+            handle.set({
+                fill: show ? 'rgba(14, 116, 144, 0.08)' : 'transparent',
+                opacity: show ? 1 : 0,
+                evented: show && !handle._isTableBoundaryGuide,
+            });
+        });
+    }
+
+    _syncAllTableResizeHandleVisibility() {
+        if (!this.canvas) return;
+        this.canvas.getObjects()
+            .filter((obj) => obj._elementType === 'table')
+            .forEach((table) => this._syncTableResizeHandleVisibility(table));
+    }
+
+    _canvasPointToTableLocal(table, point) {
+        const topLeft = typeof table.getPointByOrigin === 'function'
+            ? table.getPointByOrigin('left', 'top')
+            : { x: table.left || 0, y: table.top || 0 };
+        const angle = -((table.angle || 0) * Math.PI / 180);
+        const dx = point.x - topLeft.x;
+        const dy = point.y - topLeft.y;
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        return {
+            x: (dx * cos - dy * sin) / (table.scaleX || 1),
+            y: (dx * sin + dy * cos) / (table.scaleY || 1),
+        };
+    }
+
+    _findTableCellAtPoint(point) {
+        if (!this.canvas) return null;
+        const tables = this.canvas.getObjects()
+            .filter((obj) => obj._elementType === 'table')
+            .reverse();
+        for (const table of tables) {
+            table.setCoords();
+            const local = this._canvasPointToTableLocal(table, point);
+            const colWidths = table._tableColWidths || this._normalizeTableSizes(null, table._tableCols || 1, table._tableWidth || table.width || 1, 40);
+            const rowHeights = table._tableRowHeights || this._normalizeTableSizes(null, table._tableRows || 1, table._tableHeight || table.height || 1, 28);
+            const width = this._sumTableSizes(colWidths);
+            const height = this._sumTableSizes(rowHeights);
+            if (local.x < 0 || local.y < 0 || local.x > width || local.y > height) {
+                continue;
+            }
+            const col = this._findTableSizeIndex(colWidths, local.x);
+            const row = this._findTableSizeIndex(rowHeights, local.y);
+            return { table, row, col };
+        }
+        return null;
+    }
+
+    _getTableCellRect(table, row, col) {
+        const cols = table._tableCols || 1;
+        const rows = table._tableRows || 1;
+        const colWidths = table._tableColWidths || this._normalizeTableSizes(null, cols, table._tableWidth || table.width || 1, 40);
+        const rowHeights = table._tableRowHeights || this._normalizeTableSizes(null, rows, table._tableHeight || table.height || 1, 28);
+        const cellW = colWidths[col] || 40;
+        const cellH = rowHeights[row] || 28;
+        const topLeft = typeof table.getPointByOrigin === 'function'
+            ? table.getPointByOrigin('left', 'top')
+            : { x: table.left || 0, y: table.top || 0 };
+        const scaleX = table.scaleX || 1;
+        const scaleY = table.scaleY || 1;
+        const left = topLeft.x + this._tableOffsetForIndex(colWidths, col) * scaleX;
+        const top = topLeft.y + this._tableOffsetForIndex(rowHeights, row) * scaleY;
+        return {
+            left,
+            top,
+            width: cellW * scaleX,
+            height: cellH * scaleY,
+            angle: table.angle || 0,
+        };
+    }
+
+    _makeTableCellClipPath(bounds) {
+        return new fabric.Rect({
+            left: bounds.left,
+            top: bounds.top,
+            width: bounds.width,
+            height: bounds.height,
+            absolutePositioned: true,
+        });
+    }
+
+    _getTableCellInnerBounds(table, row, col, pad = 4) {
+        const bounds = this._getTableCellRect(table, row, col);
+        return {
+            left: bounds.left + pad,
+            top: bounds.top + pad,
+            width: Math.max(4, bounds.width - pad * 2),
+            height: Math.max(4, bounds.height - pad * 2),
+            angle: bounds.angle || 0,
+        };
+    }
+
+    _createTableCellTextbox(table, row, col, cellData, bounds) {
+        const pad = 4;
+        const normalized = this._normalizeTableCellData(cellData);
+        const fontSize = normalized.fontSize
+            || Math.max(10, Math.min(16, bounds.height * 0.28));
+        const inner = this._getTableCellInnerBounds(table, row, col, pad);
+        const textbox = new fabric.Textbox(normalized.text || '', {
+            left: inner.left,
+            top: inner.top,
+            width: Math.max(24, inner.width),
+            height: inner.height,
+            fontSize,
+            fontFamily: normalized.fontFamily || 'Helvetica',
+            fill: normalized.fill || '#000000',
+            textAlign: normalized.textAlign || 'left',
+            lineHeight: 1.15,
+            editable: true,
+            originX: 'left',
+            originY: 'top',
+            angle: bounds.angle || 0,
+            _elementType: 'text',
+            _isTableCellText: true,
+            _tableId: table._tableId,
+            _cellRow: row,
+            _cellCol: col,
+            hasControls: true,
+            lockRotation: true,
+            lockMovementX: true,
+            lockMovementY: true,
+            lockScalingX: false,
+            lockScalingY: false,
+            lockScalingFlip: true,
+            splitByGrapheme: true,
+        });
+        textbox._lastValidTableText = textbox.text || '';
+        textbox.clipPath = this._makeTableCellClipPath(bounds);
+        this.applyTextboxWrapResize(textbox);
+        return textbox;
+    }
+
+    _createTableCellImageObject(table, row, col, dataUrl, bounds) {
+        return new Promise((resolve) => {
+            fabric.Image.fromURL(dataUrl, (img) => {
+                const pad = 4;
+                const maxW = Math.max(12, bounds.width - pad * 2);
+                const maxH = Math.max(12, bounds.height - pad * 2);
+                const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+                const drawW = img.width * scale;
+                const drawH = img.height * scale;
+                img.set({
+                    left: bounds.left + pad + (maxW - drawW) / 2,
+                    top: bounds.top + pad + (maxH - drawH) / 2,
+                    scaleX: scale,
+                    scaleY: scale,
+                    angle: bounds.angle || 0,
+                    originX: 'left',
+                    originY: 'top',
+                    _elementType: 'image',
+                    _isTableCellImage: true,
+                    _tableId: table._tableId,
+                    _cellRow: row,
+                    _cellCol: col,
+                    lockRotation: true,
+                    lockScalingX: true,
+                    lockScalingY: true,
+                    lockScalingFlip: true,
+                });
+                img.clipPath = this._makeTableCellClipPath(bounds);
+                img.setCoords();
+                resolve(img);
+            });
+        });
+    }
+
+    _layoutTableCellObject(table, obj) {
+        const row = obj._cellRow;
+        const col = obj._cellCol;
+        if (row == null || col == null) return;
+        const bounds = this._getTableCellRect(table, row, col);
+        const pad = 4;
+
+        if (obj._isTableCellText) {
+            const inner = this._getTableCellInnerBounds(table, row, col, pad);
+            obj.set({
+                left: inner.left,
+                top: inner.top,
+                width: Math.max(24, inner.width),
+                height: inner.height,
+                angle: bounds.angle || 0,
+                scaleX: 1,
+                scaleY: 1,
+            });
+            this.applyTextboxWrapResize(obj);
+            this._enforceTableCellTextBounds(obj, { allowRevert: false });
+        } else if (obj._isTableCellImage) {
+            const maxW = Math.max(12, bounds.width - pad * 2);
+            const maxH = Math.max(12, bounds.height - pad * 2);
+            const baseW = obj.width || 1;
+            const baseH = obj.height || 1;
+            const scale = Math.min(maxW / baseW, maxH / baseH, obj.scaleX || 1);
+            const drawW = baseW * scale;
+            const drawH = baseH * scale;
+            obj.set({
+                left: bounds.left + pad + (maxW - drawW) / 2,
+                top: bounds.top + pad + (maxH - drawH) / 2,
+                scaleX: scale,
+                scaleY: scale,
+                angle: bounds.angle || 0,
+            });
+        } else if (obj._isTableCellContent) {
+            obj.set({ angle: (obj.angle || 0) });
+        }
+
+        if (obj.clipPath) {
+            obj.clipPath.set({
+                left: bounds.left,
+                top: bounds.top,
+                width: bounds.width,
+                height: bounds.height,
+            });
+        }
+        obj.setCoords();
+    }
+
+    _measureTableCellTextHeight(obj) {
+        if (!obj) return 0;
+        if (typeof obj.initDimensions === 'function') {
+            obj.initDimensions();
+        }
+        if (typeof obj.calcTextHeight === 'function') {
+            return obj.calcTextHeight();
+        }
+        return (obj.height || 0) * (obj.scaleY || 1);
+    }
+
+    _resizeTableRow(table, row, nextHeight) {
+        if (!table || row == null) return;
+        const active = this.getActiveObject();
+        const shouldRefocus = active?._isTableCellText && active._tableId === table._tableId;
+        const focusRow = active?._cellRow;
+        const focusCol = active?._cellCol;
+        const wasEditing = !!active?.isEditing;
+        const cursor = active?.selectionStart ?? active?.text?.length ?? 0;
+        const rows = table._tableRows || 1;
+        const current = table._tableRowHeights || this._normalizeTableSizes(null, rows, table._tableHeight || table.height || 1, 28);
+        const minHeight = 20;
+        const rowHeights = [...current];
+        rowHeights[row] = Math.max(minHeight, nextHeight);
+        const frame = this.rebuildTable(table, { rowHeights });
+        if (frame && shouldRefocus) {
+            this._focusTableCell(frame, focusRow, focusCol, wasEditing);
+            const focused = this.getActiveObject();
+            if (focused?._isTableCellText) {
+                const nextCursor = Math.min(cursor, focused.text?.length ?? 0);
+                focused.selectionStart = nextCursor;
+                focused.selectionEnd = nextCursor;
+            }
+        }
+    }
+
+    _resizeTableColumn(table, col, nextWidth) {
+        if (!table || col == null) return;
+        const active = this.getActiveObject();
+        const shouldRefocus = active?._isTableCellText && active._tableId === table._tableId;
+        const focusRow = active?._cellRow;
+        const focusCol = active?._cellCol;
+        const wasEditing = !!active?.isEditing;
+        const cursor = active?.selectionStart ?? active?.text?.length ?? 0;
+        const cols = table._tableCols || 1;
+        const current = table._tableColWidths || this._normalizeTableSizes(null, cols, table._tableWidth || table.width || 1, 40);
+        const minWidth = 30;
+        const colWidths = [...current];
+        colWidths[col] = Math.max(minWidth, nextWidth);
+        const frame = this.rebuildTable(table, { colWidths });
+        if (frame && shouldRefocus) {
+            this._focusTableCell(frame, focusRow, focusCol, wasEditing);
+            const focused = this.getActiveObject();
+            if (focused?._isTableCellText) {
+                const nextCursor = Math.min(cursor, focused.text?.length ?? 0);
+                focused.selectionStart = nextCursor;
+                focused.selectionEnd = nextCursor;
+            }
+        }
+    }
+
+    _resizeTableCellFromTextObject(obj) {
+        if (!obj?._isTableCellText) return;
+        const table = this._getTableFrame(obj._tableId);
+        if (!table) return;
+        const row = obj._cellRow;
+        const col = obj._cellCol;
+        if (row == null || col == null) return;
+
+        const inner = this._getTableCellInnerBounds(table, row, col);
+        const pad = 8;
+        const nextWidth = Math.max(inner.width, (obj.width || inner.width) * Math.abs(obj.scaleX || 1)) + pad;
+        const nextHeight = Math.max(inner.height, (obj.height || inner.height) * Math.abs(obj.scaleY || 1)) + pad;
+        const rowHeights = [...(table._tableRowHeights || this._normalizeTableSizes(null, table._tableRows || 1, table._tableHeight || table.height || 1, 28))];
+        const colWidths = [...(table._tableColWidths || this._normalizeTableSizes(null, table._tableCols || 1, table._tableWidth || table.width || 1, 40))];
+        colWidths[col] = Math.max(30, nextWidth);
+        rowHeights[row] = Math.max(20, nextHeight);
+        const frame = this.rebuildTable(table, { rowHeights, colWidths });
+        if (frame) {
+            this._focusTableCell(frame, row, col, false);
+        }
+    }
+
+    _enforceTableCellTextBounds(obj, options = {}) {
+        if (!obj?._isTableCellText) return true;
+        const table = this._getTableFrame(obj._tableId);
+        if (!table) return true;
+
+        const row = obj._cellRow;
+        const col = obj._cellCol;
+        if (row == null || col == null) return true;
+
+        const inner = this._getTableCellInnerBounds(table, row, col);
+        const maxWidth = Math.max(24, inner.width);
+        const maxHeight = Math.max(4, inner.height);
+
+        obj.set({
+            left: inner.left,
+            top: inner.top,
+            width: maxWidth,
+            scaleX: 1,
+            scaleY: 1,
+            splitByGrapheme: true,
+        });
+
+        const fits = () => this._measureTableCellTextHeight(obj) <= maxHeight + 0.5;
+
+        if (!fits()) {
+            const neededHeight = this._measureTableCellTextHeight(obj) + 8;
+            this._resizeTableRow(table, row, neededHeight);
+            return true;
+        }
+
+        obj.set({
+            height: maxHeight,
+            left: inner.left,
+            top: inner.top,
+            width: maxWidth,
+            scaleX: 1,
+            scaleY: 1,
+        });
+        obj._lastValidTableText = obj.text || '';
+        obj.setCoords();
+        this.canvas?.requestRenderAll();
+        return true;
+    }
+
+    _fitObjectInsideTableCell(obj, table, row, col) {
+        if (!obj || !table) return;
+        const inner = this._getTableCellInnerBounds(table, row, col);
+        obj.setCoords();
+        const rect = obj.getBoundingRect(true, true);
+        if (!rect.width || !rect.height) return;
+
+        const scale = Math.min(
+            inner.width / rect.width,
+            inner.height / rect.height,
+            1
+        );
+        if (scale < 1) {
+            obj.set({
+                scaleX: (obj.scaleX || 1) * scale,
+                scaleY: (obj.scaleY || 1) * scale,
+            });
+            obj.setCoords();
+        }
+
+        const fitted = obj.getBoundingRect(true, true);
+        obj.set({
+            left: (obj.left || 0) + (inner.left + (inner.width - fitted.width) / 2 - fitted.left),
+            top: (obj.top || 0) + (inner.top + (inner.height - fitted.height) / 2 - fitted.top),
+        });
+        obj.setCoords();
+    }
+
+    _constrainObjectToTableCell(obj) {
+        if (!obj?._tableId || obj._elementType === 'table') return;
+        const table = this._getTableFrame(obj._tableId);
+        if (!table) return;
+        const row = obj._cellRow;
+        const col = obj._cellCol;
+        if (row == null || col == null) return;
+
+        if (obj._isTableCellText) {
+            this._layoutTableCellObject(table, obj);
+            return;
+        }
+
+        const inner = this._getTableCellInnerBounds(table, row, col);
+        obj.setCoords();
+        const rect = obj.getBoundingRect(true, true);
+        let dx = 0;
+        let dy = 0;
+
+        if (rect.width <= inner.width) {
+            if (rect.left < inner.left) dx = inner.left - rect.left;
+            if (rect.left + rect.width > inner.left + inner.width) {
+                dx = inner.left + inner.width - (rect.left + rect.width);
+            }
+        } else {
+            dx = inner.left + (inner.width - rect.width) / 2 - rect.left;
+        }
+
+        if (rect.height <= inner.height) {
+            if (rect.top < inner.top) dy = inner.top - rect.top;
+            if (rect.top + rect.height > inner.top + inner.height) {
+                dy = inner.top + inner.height - (rect.top + rect.height);
+            }
+        } else {
+            dy = inner.top + (inner.height - rect.height) / 2 - rect.top;
+        }
+
+        if (dx || dy) {
+            obj.set({
+                left: (obj.left || 0) + dx,
+                top: (obj.top || 0) + dy,
+            });
+        }
+        if (obj.clipPath) {
+            const bounds = this._getTableCellRect(table, row, col);
+            obj.clipPath.set({
+                left: bounds.left,
+                top: bounds.top,
+                width: bounds.width,
+                height: bounds.height,
+            });
+        }
+        obj.setCoords();
+    }
+
+    _layoutTableCells(table) {
+        if (!table?._tableId) return;
+        this._getTableMembers(table._tableId).forEach((obj) => {
+            if (obj === table || obj._isTableResizeHandle) return;
+            this._layoutTableCellObject(table, obj);
+        });
+        this._layoutTableResizeHandles(table);
+        this._applyTableLayering(table);
+        this.canvas?.requestRenderAll();
+    }
+
+    _applyTableLayering(table) {
+        if (!table?._tableId || !this.canvas) return;
+        const members = this._getTableMembers(table._tableId);
+        const cellTexts = members.filter((obj) => obj._isTableCellText);
+        const handles = members.filter((obj) => obj._isTableResizeHandle);
+        const cellContent = members.filter((obj) => (
+            obj !== table && !obj._isTableCellText && !obj._isTableResizeHandle
+        ));
+
+        this.canvas.sendToBack(table);
+        if ((table._tableTextLayer || 'above') === 'below') {
+            cellTexts.forEach((obj) => this.canvas.bringToFront(obj));
+            cellContent.forEach((obj) => this.canvas.bringToFront(obj));
+        } else {
+            cellContent.forEach((obj) => this.canvas.bringToFront(obj));
+            cellTexts.forEach((obj) => this.canvas.bringToFront(obj));
+        }
+        handles.forEach((obj) => this.canvas.bringToFront(obj));
+    }
+
+    _createTableResizeHandle(table, type, index) {
+        const isCol = type === 'col';
+        const isBoundaryGuide = index < 0;
+        const handle = new fabric.Rect({
+            left: table.left || 0,
+            top: table.top || 0,
+            width: isCol ? 8 : (table._tableWidth || table.width || 1),
+            height: isCol ? (table._tableHeight || table.height || 1) : 8,
+            fill: 'rgba(14, 116, 144, 0.08)',
+            stroke: 'rgba(14, 116, 144, 0)',
+            strokeWidth: 0,
+            selectable: !isBoundaryGuide,
+            evented: !isBoundaryGuide,
+            hasControls: false,
+            hasBorders: false,
+            lockRotation: true,
+            lockScalingX: true,
+            lockScalingY: true,
+            lockMovementX: isBoundaryGuide || !isCol,
+            lockMovementY: isBoundaryGuide || isCol,
+            hoverCursor: isCol ? 'col-resize' : 'row-resize',
+            moveCursor: isCol ? 'col-resize' : 'row-resize',
+            _tableId: table._tableId,
+            _isTableResizeHandle: true,
+            _isTableBoundaryGuide: isBoundaryGuide,
+            _resizeHandleType: type,
+            _resizeHandleIndex: index,
+        });
+        return handle;
+    }
+
+    _ensureTableResizeHandles(table) {
+        if (!this.canvas || !table?._tableId) return;
+        const existing = this._getTableResizeHandles(table._tableId);
+        const expected = new Set();
+        const needsBoundaryGuides = !this._tableHasVisibleStroke(table);
+
+        if (needsBoundaryGuides) {
+            expected.add('col:-1');
+            expected.add('row:-1');
+            if (!existing.some((obj) => obj._resizeHandleType === 'col' && obj._resizeHandleIndex === -1)) {
+                this.canvas.add(this._createTableResizeHandle(table, 'col', -1));
+            }
+            if (!existing.some((obj) => obj._resizeHandleType === 'row' && obj._resizeHandleIndex === -1)) {
+                this.canvas.add(this._createTableResizeHandle(table, 'row', -1));
+            }
+        }
+
+        for (let col = 0; col < (table._tableCols || 1); col += 1) {
+            expected.add(`col:${col}`);
+            if (!existing.some((obj) => obj._resizeHandleType === 'col' && obj._resizeHandleIndex === col)) {
+                this.canvas.add(this._createTableResizeHandle(table, 'col', col));
+            }
+        }
+        for (let row = 0; row < (table._tableRows || 1); row += 1) {
+            expected.add(`row:${row}`);
+            if (!existing.some((obj) => obj._resizeHandleType === 'row' && obj._resizeHandleIndex === row)) {
+                this.canvas.add(this._createTableResizeHandle(table, 'row', row));
+            }
+        }
+
+        existing.forEach((obj) => {
+            const key = `${obj._resizeHandleType}:${obj._resizeHandleIndex}`;
+            if (!expected.has(key)) {
+                this.canvas.remove(obj);
+            }
+        });
+    }
+
+    _layoutTableResizeHandles(table) {
+        if (!this.canvas || !table?._tableId) return;
+        this._ensureTableResizeHandles(table);
+        const topLeft = typeof table.getPointByOrigin === 'function'
+            ? table.getPointByOrigin('left', 'top')
+            : { x: table.left || 0, y: table.top || 0 };
+        const scaleX = table.scaleX || 1;
+        const scaleY = table.scaleY || 1;
+        const colWidths = table._tableColWidths || this._normalizeTableSizes(null, table._tableCols || 1, table._tableWidth || table.width || 1, 40);
+        const rowHeights = table._tableRowHeights || this._normalizeTableSizes(null, table._tableRows || 1, table._tableHeight || table.height || 1, 28);
+        const tableWidth = this._sumTableSizes(colWidths) * scaleX;
+        const tableHeight = this._sumTableSizes(rowHeights) * scaleY;
+        const handleSize = 8;
+
+        this._getTableResizeHandles(table._tableId).forEach((handle) => {
+            if (handle._resizeHandleType === 'col') {
+                const x = topLeft.x + this._tableOffsetForIndex(colWidths, handle._resizeHandleIndex + 1) * scaleX;
+                handle.set({
+                    left: x - handleSize / 2,
+                    top: topLeft.y,
+                    width: handleSize,
+                    height: tableHeight,
+                    lockMovementY: true,
+                    lockMovementX: false,
+                });
+            } else {
+                const y = topLeft.y + this._tableOffsetForIndex(rowHeights, handle._resizeHandleIndex + 1) * scaleY;
+                handle.set({
+                    left: topLeft.x,
+                    top: y - handleSize / 2,
+                    width: tableWidth,
+                    height: handleSize,
+                    lockMovementX: true,
+                    lockMovementY: false,
+                });
+            }
+            handle.setCoords();
+        });
+        this._syncTableResizeHandleVisibility(table);
+    }
+
+    _constrainTableResizeHandle(handle) {
+        if (!handle?._isTableResizeHandle) return;
+        const table = this._getTableFrame(handle._tableId);
+        if (!table) return;
+        const topLeft = typeof table.getPointByOrigin === 'function'
+            ? table.getPointByOrigin('left', 'top')
+            : { x: table.left || 0, y: table.top || 0 };
+        const colWidths = table._tableColWidths || this._normalizeTableSizes(null, table._tableCols || 1, table._tableWidth || table.width || 1, 40);
+        const rowHeights = table._tableRowHeights || this._normalizeTableSizes(null, table._tableRows || 1, table._tableHeight || table.height || 1, 28);
+        const minCol = 30 * (table.scaleX || 1);
+        const minRow = 20 * (table.scaleY || 1);
+        const handleSize = 8;
+
+        if (handle._resizeHandleType === 'col') {
+            const idx = handle._resizeHandleIndex;
+            const minX = topLeft.x + this._tableOffsetForIndex(colWidths, idx) * (table.scaleX || 1) + minCol;
+            const maxX = idx < colWidths.length - 1
+                ? topLeft.x + this._tableOffsetForIndex(colWidths, idx + 2) * (table.scaleX || 1) - minCol
+                : Infinity;
+            const centerX = Math.max(minX, Math.min((handle.left || 0) + handleSize / 2, maxX));
+            handle.set({
+                left: centerX - handleSize / 2,
+                top: topLeft.y,
+            });
+        } else {
+            const idx = handle._resizeHandleIndex;
+            const minY = topLeft.y + this._tableOffsetForIndex(rowHeights, idx) * (table.scaleY || 1) + minRow;
+            const maxY = idx < rowHeights.length - 1
+                ? topLeft.y + this._tableOffsetForIndex(rowHeights, idx + 2) * (table.scaleY || 1) - minRow
+                : Infinity;
+            const centerY = Math.max(minY, Math.min((handle.top || 0) + handleSize / 2, maxY));
+            handle.set({
+                left: topLeft.x,
+                top: centerY - handleSize / 2,
+            });
+        }
+        handle.setCoords();
+    }
+
+    _applyTableResizeHandle(handle) {
+        if (!handle?._isTableResizeHandle) return;
+        const table = this._getTableFrame(handle._tableId);
+        if (!table) return;
+        const topLeft = typeof table.getPointByOrigin === 'function'
+            ? table.getPointByOrigin('left', 'top')
+            : { x: table.left || 0, y: table.top || 0 };
+        const minCol = 30;
+        const minRow = 20;
+        const colWidths = [...(table._tableColWidths || this._normalizeTableSizes(null, table._tableCols || 1, table._tableWidth || table.width || 1, 40))];
+        const rowHeights = [...(table._tableRowHeights || this._normalizeTableSizes(null, table._tableRows || 1, table._tableHeight || table.height || 1, 28))];
+        const idx = handle._resizeHandleIndex;
+
+        if (handle._resizeHandleType === 'col') {
+            const centerX = ((handle.left || 0) + (handle.width || 0) / 2 - topLeft.x) / (table.scaleX || 1);
+            const start = this._tableOffsetForIndex(colWidths, idx);
+            const oldEnd = this._tableOffsetForIndex(colWidths, idx + 1);
+            const delta = centerX - oldEnd;
+            if (idx < colWidths.length - 1) {
+                const next = colWidths[idx + 1];
+                const applied = Math.max(minCol - colWidths[idx], Math.min(delta, next - minCol));
+                colWidths[idx] += applied;
+                colWidths[idx + 1] -= applied;
+            } else {
+                colWidths[idx] = Math.max(minCol, centerX - start);
+            }
+            this.rebuildTable(table, { colWidths });
+        } else {
+            const centerY = ((handle.top || 0) + (handle.height || 0) / 2 - topLeft.y) / (table.scaleY || 1);
+            const start = this._tableOffsetForIndex(rowHeights, idx);
+            const oldEnd = this._tableOffsetForIndex(rowHeights, idx + 1);
+            const delta = centerY - oldEnd;
+            if (idx < rowHeights.length - 1) {
+                const next = rowHeights[idx + 1];
+                const applied = Math.max(minRow - rowHeights[idx], Math.min(delta, next - minRow));
+                rowHeights[idx] += applied;
+                rowHeights[idx + 1] -= applied;
+            } else {
+                rowHeights[idx] = Math.max(minRow, centerY - start);
+            }
+            this.rebuildTable(table, { rowHeights });
+        }
+    }
+
+    setTableTextLayer(table, layer) {
+        if (!table || table._elementType !== 'table') return null;
+        table._tableTextLayer = layer === 'below' ? 'below' : 'above';
+        this._applyTableLayering(table);
+        this.canvas?.requestRenderAll();
+        if (this.onCanvasModified) this.onCanvasModified();
+        return table;
+    }
+
+    _onTableFrameMoving(e) {
+        const table = e.target;
+        if (!table || table._elementType !== 'table' || !table._tableId) return;
+        const lastLeft = table._moveLastLeft ?? table.left;
+        const lastTop = table._moveLastTop ?? table.top;
+        const dx = table.left - lastLeft;
+        const dy = table.top - lastTop;
+        if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) return;
+
+        this._getTableMembers(table._tableId).forEach((obj) => {
+            if (obj === table) return;
+            obj.set({
+                left: (obj.left || 0) + dx,
+                top: (obj.top || 0) + dy,
+            });
+            if (obj.clipPath) {
+                obj.clipPath.set({
+                    left: (obj.clipPath.left || 0) + dx,
+                    top: (obj.clipPath.top || 0) + dy,
+                });
+            }
+            obj.setCoords();
+        });
+        table._moveLastLeft = table.left;
+        table._moveLastTop = table.top;
+        this.canvas.requestRenderAll();
+    }
+
+    _serializeTableCells(table) {
+        const rows = table._tableRows || 3;
+        const cols = table._tableCols || 3;
+        const cells = Array.from({ length: rows }, () => (
+            Array.from({ length: cols }, () => ({ text: '', image: null }))
+        ));
+        for (let row = 0; row < rows; row += 1) {
+            for (let col = 0; col < cols; col += 1) {
+                const textbox = this._getTableCellTextbox(table._tableId, row, col);
+                const image = this._getTableCellImage(table._tableId, row, col);
+                const cell = { text: textbox?.text || '', image: null };
+                if (textbox) {
+                    cell.fontSize = textbox.fontSize;
+                    cell.fontFamily = textbox.fontFamily;
+                    cell.fill = typeof textbox.fill === 'string' ? textbox.fill : '#000000';
+                    cell.textAlign = textbox.textAlign || 'left';
+                }
+                if (image) {
+                    try {
+                        cell.image = image.toDataURL({ format: 'png' });
+                    } catch (err) {
+                        cell.image = null;
+                    }
+                }
+                cells[row][col] = cell;
+            }
+        }
+        return cells;
+    }
+
+    _removeTableMembers(tableId, removeFrame = true) {
+        if (!this.canvas || !tableId) return;
+        this.canvas.getObjects().slice().forEach((obj) => {
+            if (obj._tableId !== tableId) return;
+            if (!removeFrame && obj._elementType === 'table') return;
+            this.canvas.remove(obj);
+        });
+        this.canvas.discardActiveObject();
+        this.canvas.requestRenderAll();
+    }
+
+    _focusTableCell(table, row, col, enterEdit = false) {
+        this._clearActiveTableCells(table);
+        table._activeCell = { row, col };
+        let textbox = this._getTableCellTextbox(table._tableId, row, col);
+        if (!textbox) {
+            const bounds = this._getTableCellRect(table, row, col);
+            textbox = this._createTableCellTextbox(table, row, col, '', bounds);
+            this.canvas.add(textbox);
+            this._registerCanvasObject(textbox);
+        }
+        this.canvas.setActiveObject(textbox);
+        if (enterEdit) {
+            textbox.enterEditing();
+            if (!textbox.text || textbox.text === 'Type here') {
+                textbox.selectAll();
+            } else {
+                textbox.selectionStart = textbox.text.length;
+                textbox.selectionEnd = textbox.text.length;
+            }
+        }
+        this.canvas.requestRenderAll();
+        if (this.onObjectSelected) this.onObjectSelected([textbox]);
+    }
+
+    _clearActiveTableCells(exceptTable = null) {
+        if (!this.canvas) return;
+        this.canvas.getObjects().forEach((obj) => {
+            if (obj._elementType === 'table' && obj !== exceptTable) {
+                obj._activeCell = null;
+            }
+        });
+    }
+
+    getTableCellTargetFromSelection() {
+        const active = this.getActiveObject();
+        if (!active) {
+            const activeTable = this.canvas?.getObjects()
+                .slice()
+                .reverse()
+                .find((obj) => obj._elementType === 'table' && obj._activeCell);
+            if (activeTable) {
+                return {
+                    table: activeTable,
+                    row: activeTable._activeCell.row,
+                    col: activeTable._activeCell.col,
+                };
+            }
+            return null;
+        }
+        if (active._isTableCellText || active._isTableCellImage) {
+            const table = this._getTableFrame(active._tableId);
+            if (table) {
+                return { table, row: active._cellRow, col: active._cellCol };
+            }
+        }
+        if (active._elementType === 'table' && active._activeCell) {
+            return {
+                table: active,
+                row: active._activeCell.row,
+                col: active._activeCell.col,
+            };
+        }
+        const activeTable = this.canvas?.getObjects()
+            .slice()
+            .reverse()
+            .find((obj) => obj._elementType === 'table' && obj._activeCell);
+        if (activeTable) {
+            return {
+                table: activeTable,
+                row: activeTable._activeCell.row,
+                col: activeTable._activeCell.col,
+            };
+        }
+        return null;
+    }
+
+    _tryAttachObjectToTableCell(obj) {
+        if (!obj || obj._elementType === 'table' || obj._isTableCellText || obj._isTableCellImage) {
+            return;
+        }
+        if (obj._tableId && obj._isTableCellContent) {
+            return;
+        }
+        const center = obj.getCenterPoint();
+        const hit = this._findTableCellAtPoint(center);
+        if (!hit) return;
+
+        this._attachObjectToTableCell(obj, hit, { fit: false });
+    }
+
+    _attachObjectToTableCellIfHit(obj, point = null, options = {}) {
+        if (!obj || obj._elementType === 'table' || obj._isTableCellText || obj._isTableCellImage) {
+            return null;
+        }
+        const hitPoint = point || obj.getCenterPoint();
+        const hit = this._findTableCellAtPoint(hitPoint);
+        if (!hit) return null;
+        this._attachObjectToTableCell(obj, hit, options);
+        return hit;
+    }
+
+    _attachObjectToTableCell(obj, hit, options = {}) {
+        if (!obj || !hit?.table) return;
+        obj.set({
+            _tableId: hit.table._tableId,
+            _cellRow: hit.row,
+            _cellCol: hit.col,
+            _isTableCellContent: true,
+        });
+        const bounds = this._getTableCellRect(hit.table, hit.row, hit.col);
+        obj.clipPath = this._makeTableCellClipPath(bounds);
+        if (options.fit) {
+            this._fitObjectInsideTableCell(obj, hit.table, hit.row, hit.col);
+        } else {
+            this._constrainObjectToTableCell(obj);
+        }
+        obj.setCoords();
+        this._applyTableLayering(hit.table);
+        if (this.onCanvasModified) this.onCanvasModified();
+    }
+
+    _buildTableParts(width, height, rows, cols, options = {}) {
+        const fill = options.fill ?? this.tableDefaults.fill ?? '#ffffff';
+        const stroke = options.stroke ?? this.tableDefaults.stroke ?? '#333333';
+        const storedStrokeWidth = options.strokeWidth ?? this.tableDefaults.strokeWidth ?? 1;
+        const renderStrokeWidth = this._normalizeTableRenderStrokeWidth(storedStrokeWidth);
+        const hasStroke = stroke !== 'transparent' && renderStrokeWidth > 0;
+        const lineStyle = ['dashed', 'dotted'].includes(options.lineStyle)
+            ? options.lineStyle
+            : (this.tableDefaults.lineStyle || 'solid');
+        const strokeDashArray = hasStroke ? this.getDashArrayForStyle(lineStyle, renderStrokeWidth) : null;
+        const inset = hasStroke ? renderStrokeWidth / 2 : 0;
+        const colWidths = this._scaleTableSizesToTotal(
+            this._normalizeTableSizes(options.colWidths, cols, width, 30),
+            width,
+            30
+        );
+        const rowHeights = this._scaleTableSizesToTotal(
+            this._normalizeTableSizes(options.rowHeights, rows, height, 20),
+            height,
+            20
+        );
+        const tableWidth = this._sumTableSizes(colWidths);
+        const tableHeight = this._sumTableSizes(rowHeights);
+        const objects = [];
+
+        objects.push(new fabric.Rect({
+            left: inset,
+            top: inset,
+            width: Math.max(1, tableWidth - inset * 2),
+            height: Math.max(1, tableHeight - inset * 2),
+            fill: fill === 'transparent' ? 'transparent' : fill,
+            stroke: hasStroke ? stroke : 'transparent',
+            strokeWidth: hasStroke ? renderStrokeWidth : 0,
+            strokeDashArray,
+            strokeUniform: true,
+            selectable: false,
+            evented: false,
+        }));
+
+        if (hasStroke) {
+            const lineOpts = {
+                stroke,
+                strokeWidth: renderStrokeWidth,
+                strokeDashArray,
+                strokeUniform: true,
+                selectable: false,
+                evented: false,
+            };
+            let y = 0;
+            for (let r = 1; r < rows; r += 1) {
+                y += rowHeights[r - 1];
+                objects.push(new fabric.Line(
+                    [inset, y, tableWidth - inset, y],
+                    lineOpts
+                ));
+            }
+
+            let x = 0;
+            for (let c = 1; c < cols; c += 1) {
+                x += colWidths[c - 1];
+                objects.push(new fabric.Line(
+                    [x, inset, x, tableHeight - inset],
+                    lineOpts
+                ));
+            }
+        }
+
+        return {
+            objects,
+            fill,
+            stroke,
+            strokeWidth: storedStrokeWidth,
+            lineStyle,
+            rowHeights,
+            colWidths,
+            tableWidth,
+            tableHeight,
+        };
+    }
+
+    _createTablePreview(x, y) {
+        const stroke = this.tableDefaults.stroke || '#333333';
+        const rect = new fabric.Rect({
+            left: x,
+            top: y,
+            width: 0,
+            height: 0,
+            fill: 'rgba(79, 152, 163, 0.2)',
+            stroke,
+            strokeWidth: this.tableDefaults.strokeWidth ?? 1,
+            strokeUniform: true,
+            strokeDashArray: [4, 4],
+            selectable: false,
+            evented: false,
+        });
+        this.canvas.add(rect);
+        return rect;
+    }
+
+    _createTable(left, top, width, height, options = {}) {
+        const rows = Math.max(1, Math.min(20, parseInt(options.rows ?? this.tableDefaults.rows ?? 3, 10) || 3));
+        const cols = Math.max(1, Math.min(20, parseInt(options.cols ?? this.tableDefaults.cols ?? 3, 10) || 3));
+        const margins = this.getPageContentMargins();
+        const maxW = margins.right - margins.left;
+        const maxH = margins.bottom - margins.top;
+        const minW = Math.min(Math.max(width, cols * 30), maxW);
+        const minH = Math.min(Math.max(height, rows * 20), maxH);
+        const fitted = this._fitTableLayout(left, top,
+            this._scaleTableSizesToTotal(
+                this._normalizeTableSizes(options.colWidths, cols, minW, 30),
+                minW,
+                30
+            ),
+            this._scaleTableSizesToTotal(
+                this._normalizeTableSizes(options.rowHeights, rows, minH, 20),
+                minH,
+                20
+            )
+        );
+        const cells = this._normalizeTableCells(options.cells, rows, cols);
+        const tableId = options.tableId || this._generateTableId();
+        const { objects, fill, stroke, strokeWidth, lineStyle, rowHeights, colWidths, tableWidth, tableHeight } = this._buildTableParts(
+            fitted.width,
+            fitted.height,
+            rows,
+            cols,
+            {
+                ...options,
+                colWidths: fitted.colWidths,
+                rowHeights: fitted.rowHeights,
+            }
+        );
+
+        const frame = new fabric.Group(objects, {
+            left: fitted.left,
+            top: fitted.top,
+            originX: 'left',
+            originY: 'top',
+            _elementType: 'table',
+            _tableId: tableId,
+            _tableRows: rows,
+            _tableCols: cols,
+            _tableFill: fill,
+            _tableStroke: stroke,
+            _tableStrokeWidth: strokeWidth,
+            _tableLineStyle: lineStyle,
+            _tableCells: cells,
+            _tableWidth: tableWidth,
+            _tableHeight: tableHeight,
+            _tableRowHeights: rowHeights,
+            _tableColWidths: colWidths,
+            _tableTextLayer: options.textLayer === 'below' ? 'below' : 'above',
+            subTargetCheck: false,
+            lockRotation: true,
+            lockScalingX: true,
+            lockScalingY: true,
+            lockUniScaling: true,
+            hasControls: true,
+            hasBorders: true,
+        });
+        frame.setCoords();
+
+        const cellObjects = [];
+        for (let row = 0; row < rows; row += 1) {
+            for (let col = 0; col < cols; col += 1) {
+                const bounds = this._getTableCellRect(frame, row, col);
+                cellObjects.push(this._createTableCellTextbox(frame, row, col, cells[row][col], bounds));
+            }
+        }
+
+        return { frame, cellObjects, tableId, pendingImages: cells };
+    }
+
+    async _populateTableCellImages(frame, cells) {
+        const rows = frame._tableRows || 3;
+        const cols = frame._tableCols || 3;
+        const imageLoads = [];
+        for (let row = 0; row < rows; row += 1) {
+            for (let col = 0; col < cols; col += 1) {
+                const imageSrc = cells?.[row]?.[col]?.image;
+                if (!imageSrc) continue;
+                const bounds = this._getTableCellRect(frame, row, col);
+                imageLoads.push(
+                    this._createTableCellImageObject(frame, row, col, imageSrc, bounds)
+                        .then((img) => {
+                            if (img) this.canvas.add(img);
+                            return img;
+                        })
+                );
+            }
+        }
+        if (imageLoads.length) {
+            await Promise.all(imageLoads);
+            this._applyTableLayering(frame);
+            this.canvas.requestRenderAll();
+        }
+    }
+
+    addTableToCanvas(left, top, width, height, options = {}) {
+        const { frame, cellObjects } = this._createTable(left, top, width, height, options);
+        this.canvas.add(frame);
+        cellObjects.forEach((obj) => this.canvas.add(obj));
+        this._populateTableCellImages(frame, options.cells || this._normalizeTableCells(null, frame._tableRows, frame._tableCols));
+        this._registerCanvasObject(frame);
+        cellObjects.forEach((obj) => this._registerCanvasObject(obj));
+        this._layoutTableResizeHandles(frame);
+        this._applyTableLayering(frame);
+        frame.setCoords();
+        this.canvas.requestRenderAll();
+        if (this.onCanvasModified) this.onCanvasModified();
+        return frame;
+    }
+
+    rebuildTable(group, configPatch = {}, options = {}) {
+        if (!group || group._elementType !== 'table' || !this.canvas) {
+            return null;
+        }
+
+        const left = group.left || 0;
+        const top = group.top || 0;
+        const angle = options.angle != null ? options.angle : (group.angle || 0);
+        const opacity = options.opacity != null ? options.opacity : (group.opacity ?? 1);
+        const width = group._tableWidth || group.width || 100;
+        const height = group._tableHeight || group.height || 80;
+        const current = this.getTableConfigFromGroup(group) || {};
+        const cfg = {
+            ...current,
+            ...configPatch,
+            cells: configPatch.cells || current.cells,
+            tableId: group._tableId,
+        };
+
+        const nextRows = cfg.rows || group._tableRows || 3;
+        const nextCols = cfg.cols || group._tableCols || 3;
+        const fitted = this._fitTableLayout(
+            left,
+            top,
+            this._scaleTableSizesToTotal(
+                this._normalizeTableSizes(cfg.colWidths, nextCols, width, 30),
+                width,
+                30
+            ),
+            this._scaleTableSizesToTotal(
+                this._normalizeTableSizes(cfg.rowHeights, nextRows, height, 20),
+                height,
+                20
+            )
+        );
+        cfg.colWidths = fitted.colWidths;
+        cfg.rowHeights = fitted.rowHeights;
+
+        const wasActive = this.canvas.getActiveObject() === group;
+        const index = this.canvas.getObjects().indexOf(group);
+
+        this._removeTableMembers(group._tableId, true);
+        const frame = this.addTableToCanvas(fitted.left, fitted.top, fitted.width, fitted.height, cfg);
+        frame.set({ angle, opacity });
+        frame.setCoords();
+        this._layoutTableCells(frame);
+
+        if (index >= 0) {
+            this.canvas.moveTo(frame, index);
+        }
+
+        if (wasActive) {
+            this.canvas.setActiveObject(frame);
+        }
+        this.canvas.requestRenderAll();
+        if (this.onCanvasModified) this.onCanvasModified();
+        return frame;
+    }
+
+    _rebuildTableStructural(table, configPatch, activeRow, activeCol, enterEdit = false) {
+        const frame = this.rebuildTable(table, configPatch);
+        if (frame && activeRow != null && activeCol != null) {
+            this._focusTableCell(frame, activeRow, activeCol, enterEdit);
+        }
+        return frame;
+    }
+
+    _getTableSizeArrays(table, cfg) {
+        const rows = cfg.rows || table._tableRows || 1;
+        const cols = cfg.cols || table._tableCols || 1;
+        const height = table._tableHeight || table.height || 80;
+        const width = table._tableWidth || table.width || 100;
+        return {
+            rowHeights: [...(cfg.rowHeights || this._normalizeTableSizes(null, rows, height, 28))],
+            colWidths: [...(cfg.colWidths || this._normalizeTableSizes(null, cols, width, 40))],
+        };
+    }
+
+    insertTableRow(table, rowIndex, position = 'below') {
+        if (!table || table._elementType !== 'table') return null;
+        const cfg = this.getTableConfigFromGroup(table);
+        if (!cfg || cfg.rows >= 20) return null;
+
+        const rows = cfg.rows;
+        const cols = cfg.cols;
+        const insertAt = position === 'below' ? rowIndex + 1 : rowIndex;
+        const { rowHeights } = this._getTableSizeArrays(table, cfg);
+        const totalHeight = this._sumTableSizes(rowHeights);
+        rowHeights.splice(insertAt, 0, totalHeight / (rows + 1));
+        const nextRowHeights = this._scaleTableSizesToTotal(rowHeights, totalHeight, 20);
+
+        const cells = cfg.cells.map((row) => row.map((cell) => ({ ...this._normalizeTableCellData(cell) })));
+        cells.splice(insertAt, 0, Array.from({ length: cols }, () => ({ text: '', image: null })));
+
+        const activeCol = table._activeCell?.col ?? 0;
+        return this._rebuildTableStructural(table, {
+            rows: rows + 1,
+            cols,
+            rowHeights: nextRowHeights,
+            colWidths: cfg.colWidths,
+            cells,
+        }, insertAt, activeCol, true);
+    }
+
+    insertTableColumn(table, colIndex, position = 'right') {
+        if (!table || table._elementType !== 'table') return null;
+        const cfg = this.getTableConfigFromGroup(table);
+        if (!cfg || cfg.cols >= 20) return null;
+
+        const rows = cfg.rows;
+        const cols = cfg.cols;
+        const insertAt = position === 'right' ? colIndex + 1 : colIndex;
+        const { colWidths } = this._getTableSizeArrays(table, cfg);
+        const totalWidth = this._sumTableSizes(colWidths);
+        colWidths.splice(insertAt, 0, totalWidth / (cols + 1));
+        const nextColWidths = this._scaleTableSizesToTotal(colWidths, totalWidth, 30);
+
+        const cells = cfg.cells.map((row) => {
+            const next = row.map((cell) => ({ ...this._normalizeTableCellData(cell) }));
+            next.splice(insertAt, 0, { text: '', image: null });
+            return next;
+        });
+
+        const activeRow = table._activeCell?.row ?? 0;
+        return this._rebuildTableStructural(table, {
+            rows,
+            cols: cols + 1,
+            rowHeights: cfg.rowHeights,
+            colWidths: nextColWidths,
+            cells,
+        }, activeRow, insertAt, true);
+    }
+
+    deleteTableRow(table, rowIndex) {
+        if (!table || table._elementType !== 'table') return null;
+        const cfg = this.getTableConfigFromGroup(table);
+        if (!cfg || cfg.rows <= 1) return null;
+
+        const { rowHeights } = this._getTableSizeArrays(table, cfg);
+        const deletedHeight = rowHeights[rowIndex] || 28;
+        rowHeights.splice(rowIndex, 1);
+        if (rowIndex > 0) {
+            rowHeights[rowIndex - 1] += deletedHeight;
+        } else if (rowHeights.length) {
+            rowHeights[0] += deletedHeight;
+        }
+
+        const cells = cfg.cells.map((row) => row.map((cell) => ({ ...this._normalizeTableCellData(cell) })));
+        cells.splice(rowIndex, 1);
+
+        let activeRow = table._activeCell?.row ?? rowIndex;
+        let activeCol = table._activeCell?.col ?? 0;
+        if (activeRow >= cells.length) activeRow = cells.length - 1;
+        if (activeRow === rowIndex && activeRow > 0) activeRow -= 1;
+
+        return this._rebuildTableStructural(table, {
+            rows: cfg.rows - 1,
+            cols: cfg.cols,
+            rowHeights,
+            colWidths: cfg.colWidths,
+            cells,
+        }, activeRow, activeCol, false);
+    }
+
+    deleteTableColumn(table, colIndex) {
+        if (!table || table._elementType !== 'table') return null;
+        const cfg = this.getTableConfigFromGroup(table);
+        if (!cfg || cfg.cols <= 1) return null;
+
+        const { colWidths } = this._getTableSizeArrays(table, cfg);
+        const deletedWidth = colWidths[colIndex] || 40;
+        colWidths.splice(colIndex, 1);
+        if (colIndex > 0) {
+            colWidths[colIndex - 1] += deletedWidth;
+        } else if (colWidths.length) {
+            colWidths[0] += deletedWidth;
+        }
+
+        const cells = cfg.cells.map((row) => {
+            const next = row.map((cell) => ({ ...this._normalizeTableCellData(cell) }));
+            next.splice(colIndex, 1);
+            return next;
+        });
+
+        let activeRow = table._activeCell?.row ?? 0;
+        let activeCol = table._activeCell?.col ?? colIndex;
+        if (activeCol >= (cells[0]?.length || 1)) activeCol = (cells[0]?.length || 1) - 1;
+        if (activeCol === colIndex && activeCol > 0) activeCol -= 1;
+
+        return this._rebuildTableStructural(table, {
+            rows: cfg.rows,
+            cols: cfg.cols - 1,
+            rowHeights: cfg.rowHeights,
+            colWidths,
+            cells,
+        }, activeRow, activeCol, false);
+    }
+
+    distributeTableSizesEvenly(table) {
+        if (!table || table._elementType !== 'table') return null;
+        const cfg = this.getTableConfigFromGroup(table);
+        if (!cfg) return null;
+
+        const rows = cfg.rows;
+        const cols = cfg.cols;
+        const height = table._tableHeight || table.height || 80;
+        const width = table._tableWidth || table.width || 100;
+        const rowHeights = Array.from({ length: rows }, () => height / rows);
+        const colWidths = Array.from({ length: cols }, () => width / cols);
+
+        const activeRow = table._activeCell?.row ?? 0;
+        const activeCol = table._activeCell?.col ?? 0;
+        return this._rebuildTableStructural(table, { rowHeights, colWidths }, activeRow, activeCol, false);
+    }
+
+    addTableFromDetection(bbox, rowsData, options = {}) {
+        if (!bbox || bbox.length < 4 || !this.canvas) return null;
+
+        const left = bbox[0];
+        const top = bbox[1];
+        const width = Math.max(bbox[2] - bbox[0], 40);
+        const height = Math.max(bbox[3] - bbox[1], 28);
+        const sourceRows = Array.isArray(rowsData) ? rowsData : [];
+        const rows = Math.max(1, Math.min(20, sourceRows.length || 1));
+        const cols = Math.max(1, Math.min(20, sourceRows.reduce((max, row) => (
+            Math.max(max, Array.isArray(row) ? row.length : 0)
+        ), 1)));
+
+        const rawCells = Array.from({ length: rows }, (_, rowIdx) => (
+            Array.from({ length: cols }, (_, colIdx) => ({
+                text: String(sourceRows[rowIdx]?.[colIdx] ?? ''),
+                image: null,
+            }))
+        ));
+
+        const table = this.addTableToCanvas(left, top, width, height, {
+            rows,
+            cols,
+            cells: rawCells,
+            fill: options.fill ?? this.tableDefaults.fill,
+            stroke: options.stroke ?? this.tableDefaults.stroke,
+            strokeWidth: options.strokeWidth ?? this.tableDefaults.strokeWidth,
+            textLayer: options.textLayer ?? this.tableDefaults.textLayer,
+        });
+        this.canvas.setActiveObject(table);
+        this.canvas.requestRenderAll();
+        if (this.onObjectSelected) this.onObjectSelected([table]);
+        return table;
+    }
+
+    _escapeCsvField(value) {
+        const text = String(value ?? '');
+        if (/[",\n\r]/.test(text)) {
+            return `"${text.replace(/"/g, '""')}"`;
+        }
+        return text;
+    }
+
+    exportTableCsv(table) {
+        if (!table || table._elementType !== 'table') return '';
+        const cells = this._serializeTableCells(table);
+        return cells.map((row) => (
+            row.map((cell) => this._escapeCsvField(cell.text || '')).join(',')
+        )).join('\n');
+    }
+
+    _parseCsvRows(csvText) {
+        const rows = [];
+        let row = [];
+        let field = '';
+        let inQuotes = false;
+
+        for (let i = 0; i < csvText.length; i += 1) {
+            const ch = csvText[i];
+            const next = csvText[i + 1];
+
+            if (inQuotes) {
+                if (ch === '"' && next === '"') {
+                    field += '"';
+                    i += 1;
+                } else if (ch === '"') {
+                    inQuotes = false;
+                } else {
+                    field += ch;
+                }
+                continue;
+            }
+
+            if (ch === '"') {
+                inQuotes = true;
+            } else if (ch === ',') {
+                row.push(field);
+                field = '';
+            } else if (ch === '\n' || ch === '\r') {
+                if (ch === '\r' && next === '\n') i += 1;
+                row.push(field);
+                if (row.some((cell) => cell.length > 0)) rows.push(row);
+                row = [];
+                field = '';
+            } else {
+                field += ch;
+            }
+        }
+
+        row.push(field);
+        if (row.some((cell) => cell.length > 0)) rows.push(row);
+        return rows;
+    }
+
+    importTableFromCsv(csvText, left, top, options = {}) {
+        if (!csvText || !this.canvas) return null;
+        const parsed = this._parseCsvRows(csvText);
+        if (!parsed.length) return null;
+
+        const rows = Math.min(20, parsed.length);
+        const cols = Math.min(20, parsed.reduce((max, row) => Math.max(max, row.length), 1));
+        const cells = Array.from({ length: rows }, (_, rowIdx) => (
+            Array.from({ length: cols }, (_, colIdx) => ({
+                text: String(parsed[rowIdx]?.[colIdx] ?? ''),
+                image: null,
+            }))
+        ));
+
+        const placeLeft = Number.isFinite(left) ? left : (this.canvasWidth - cols * 80) / 2;
+        const placeTop = Number.isFinite(top) ? top : (this.canvasHeight - rows * 28) / 2;
+        const table = this.addTableToCanvas(
+            placeLeft,
+            placeTop,
+            cols * 80,
+            rows * 28,
+            {
+                rows,
+                cols,
+                cells,
+                fill: options.fill ?? this.tableDefaults.fill,
+                stroke: options.stroke ?? this.tableDefaults.stroke,
+                strokeWidth: options.strokeWidth ?? this.tableDefaults.strokeWidth,
+                textLayer: options.textLayer ?? this.tableDefaults.textLayer,
+            }
+        );
+        this.canvas.setActiveObject(table);
+        this.canvas.requestRenderAll();
+        if (this.onObjectSelected) this.onObjectSelected([table]);
+        return table;
+    }
+
+    _getTableCellNavigationTarget(table, row, col, key, shiftKey) {
+        const rows = table._tableRows || 1;
+        const cols = table._tableCols || 1;
+        let nextRow = row;
+        let nextCol = col;
+
+        switch (key) {
+            case 'Tab':
+                if (shiftKey) {
+                    nextCol -= 1;
+                    if (nextCol < 0) {
+                        nextCol = cols - 1;
+                        nextRow -= 1;
+                    }
+                } else {
+                    nextCol += 1;
+                    if (nextCol >= cols) {
+                        nextCol = 0;
+                        nextRow += 1;
+                    }
+                }
+                break;
+            case 'Enter':
+                nextRow += 1;
+                break;
+            case 'ArrowLeft':
+                nextCol -= 1;
+                break;
+            case 'ArrowRight':
+                nextCol += 1;
+                break;
+            case 'ArrowUp':
+                nextRow -= 1;
+                break;
+            case 'ArrowDown':
+                nextRow += 1;
+                break;
+            default:
+                return null;
+        }
+
+        if (nextRow < 0 || nextRow >= rows || nextCol < 0 || nextCol >= cols) {
+            return null;
+        }
+        return { row: nextRow, col: nextCol };
+    }
+
+    handleTableCellKeyboard(e) {
+        if (!this.canvas || !e) return false;
+
+        const active = this.getActiveObject();
+        let table = null;
+        let row = null;
+        let col = null;
+
+        if (active?._isTableCellText) {
+            table = this._getTableFrame(active._tableId);
+            row = active._cellRow;
+            col = active._cellCol;
+        } else if (active?._elementType === 'table' && active._activeCell) {
+            table = active;
+            row = active._activeCell.row;
+            col = active._activeCell.col;
+        } else {
+            const cellTarget = this.getTableCellTargetFromSelection();
+            if (!cellTarget) return false;
+            table = cellTarget.table;
+            row = cellTarget.row;
+            col = cellTarget.col;
+        }
+
+        if (!table || row == null || col == null) return false;
+
+        if (e.key === 'Escape' && active?._isTableCellText && active.isEditing) {
+            active.exitEditing();
+            this.canvas.requestRenderAll();
+            return true;
+        }
+
+        const navKeys = ['Tab', 'Enter', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'];
+        if (!navKeys.includes(e.key)) return false;
+
+        if (active?._isTableCellText && active.isEditing && e.key.startsWith('Arrow')) {
+            return false;
+        }
+
+        if (!active?._isTableCellText && e.key !== 'ArrowLeft' && e.key !== 'ArrowRight'
+            && e.key !== 'ArrowUp' && e.key !== 'ArrowDown') {
+            return false;
+        }
+
+        const target = this._getTableCellNavigationTarget(table, row, col, e.key, e.shiftKey);
+        if (!target) return false;
+
+        if (active?._isTableCellText && active.isEditing) {
+            active.exitEditing();
+        }
+
+        this._focusTableCell(table, target.row, target.col, true);
+        return true;
+    }
+
+    getTableContextFromTarget(target) {
+        if (!target) return null;
+        if (target._elementType === 'table') {
+            const row = target._activeCell?.row ?? 0;
+            const col = target._activeCell?.col ?? 0;
+            return { table: target, row, col };
+        }
+        if (target._isTableCellText || target._isTableCellImage) {
+            const table = this._getTableFrame(target._tableId);
+            if (!table) return null;
+            return { table, row: target._cellRow, col: target._cellCol };
+        }
+        return null;
+    }
+
+    addTableCellImage(table, row, col, dataUrl) {
+        if (!table || !dataUrl) return Promise.resolve(null);
+        const existing = this._getTableCellImage(table._tableId, row, col);
+        if (existing) {
+            this.canvas.remove(existing);
+        }
+        const bounds = this._getTableCellRect(table, row, col);
+        return this._createTableCellImageObject(table, row, col, dataUrl, bounds).then((img) => {
+            if (!img) return null;
+            this.canvas.add(img);
+            this._applyTableLayering(table);
+            this.canvas.requestRenderAll();
+            if (this.onCanvasModified) this.onCanvasModified();
+            return img;
+        });
+    }
+
     _createRect(x, y) {
         const rect = new fabric.Rect({
             left: x,
@@ -2104,7 +3988,7 @@ class PDFEditor {
     showTableOverlays(tables) {
         this.clearTableOverlays();
         this._tableOverlays = [];
-        (tables || []).forEach((table) => {
+        (tables || []).forEach((table, index) => {
             const bbox = table.bbox;
             if (!bbox || bbox.length < 4) return;
             const rect = new fabric.Rect({
@@ -2119,6 +4003,7 @@ class PDFEditor {
                 evented: false,
                 excludeFromExport: true,
                 _isTableOverlay: true,
+                _detectedTableIndex: index,
             });
             this._tableOverlays.push(rect);
             this.canvas.add(rect);
@@ -2149,7 +4034,15 @@ class PDFEditor {
         return rect;
     }
 
-    addImage(dataUrl) {
+    addImage(dataUrl, cellTarget = null) {
+        if (cellTarget?.table) {
+            return this.addTableCellImage(
+                cellTarget.table,
+                cellTarget.row,
+                cellTarget.col,
+                dataUrl
+            );
+        }
         return new Promise((resolve) => {
             fabric.Image.fromURL(dataUrl, (img) => {
                 const maxW = this.canvasWidth * 0.5;
@@ -2174,6 +4067,20 @@ class PDFEditor {
     _deleteSelected() {
         const active = this.canvas.getActiveObjects();
         if (active.length === 0) return;
+
+        const tableIdsToRemove = new Set();
+        active.forEach((obj) => {
+            if (obj._elementType === 'table' && obj._tableId) {
+                tableIdsToRemove.add(obj._tableId);
+            }
+        });
+
+        if (tableIdsToRemove.size > 0) {
+            tableIdsToRemove.forEach((tableId) => this._removeTableMembers(tableId, true));
+            if (this.onCanvasModified) this.onCanvasModified();
+            return;
+        }
+
         active.forEach((obj) => {
             if (obj.origin === 'pdf' && obj.originalPdfBbox) {
                 this.deletedOriginals.push({
@@ -2240,7 +4147,7 @@ class PDFEditor {
 
     loadElements(elements) {
         const orderPriority = {
-            rect: 0, ellipse: 0, path: 0, highlight: 0, redaction: 0, sticky: 0, stamp: 0, image: 1, text: 2, ocr_mask: 0,
+            rect: 0, ellipse: 0, path: 0, highlight: 0, redaction: 0, sticky: 0, stamp: 0, table: 0, image: 1, text: 2, ocr_mask: 0,
         };
         const sorted = [...elements].sort((a, b) => {
             const pa = orderPriority[a.type] ?? 1;
@@ -2498,6 +4405,27 @@ class PDFEditor {
                     sticky.set('opacity', elem.opacity);
                 }
                 this.canvas.add(sticky);
+                break;
+            }
+            case 'table': {
+                const width = bbox[2] - bbox[0];
+                const height = bbox[3] - bbox[1];
+                const table = this.addTableToCanvas(bbox[0], bbox[1], width, height, {
+                    rows: elem.rows || 3,
+                    cols: elem.cols || 3,
+                    fill: elem.fill,
+                    stroke: elem.stroke,
+                    strokeWidth: elem.strokeWidth,
+                    lineStyle: elem.lineStyle,
+                    textLayer: elem.textLayer,
+                    rowHeights: elem.rowHeights,
+                    colWidths: elem.colWidths,
+                    cells: elem.cells,
+                    tableId: elem.tableId,
+                });
+                if (elem.angle != null) table.set('angle', elem.angle);
+                if (elem.opacity != null) table.set('opacity', elem.opacity);
+                this._layoutTableCells(table);
                 break;
             }
             case 'path': {
@@ -2815,6 +4743,9 @@ class PDFEditor {
             if (this._isOcrMaskObject(obj)) {
                 return false;
             }
+            if (obj._tableId && obj._elementType !== 'table' && !obj._isTableCellContent) {
+                return false;
+            }
             return true;
         }).map((obj) => {
             const base = {
@@ -2831,10 +4762,12 @@ class PDFEditor {
             if (obj.type === 'textbox' || obj.type === 'i-text' || obj.type === 'text') {
                 base.type = 'text';
                 base.text = obj.text || '';
-                const left = obj.left || 0;
-                const top = obj.top || 0;
-                const w = (obj.width || 100) * (obj.scaleX || 1);
-                const h = (obj.height || 20) * (obj.scaleY || 1);
+                obj.setCoords();
+                const br = obj.getBoundingRect(true, true);
+                const left = br.left;
+                const top = br.top;
+                const w = Math.max(br.width, 1);
+                const h = Math.max(br.height, 1);
                 base.bbox = [left, top, left + w, top + h];
                 base.pdf_bbox = [left / scale, top / scale, (left + w) / scale, (top + h) / scale];
                 base.fontFamily = obj.fontFamily || 'Helvetica';
@@ -2977,6 +4910,28 @@ class PDFEditor {
                         base.origin = 'pdf';
                         base.originalPdfBbox = obj.originalPdfBbox || null;
                     }
+                } else if (obj._elementType === 'table') {
+                    base.type = 'table';
+                    const bounds = obj.getBoundingRect(true, true);
+                    base.bbox = [bounds.left, bounds.top, bounds.left + bounds.width, bounds.top + bounds.height];
+                    base.pdf_bbox = [
+                        bounds.left / scale,
+                        bounds.top / scale,
+                        (bounds.left + bounds.width) / scale,
+                        (bounds.top + bounds.height) / scale,
+                    ];
+                    base.rows = obj._tableRows || 3;
+                    base.cols = obj._tableCols || 3;
+                    base.fill = obj._tableFill || '#ffffff';
+                    base.stroke = obj._tableStroke || '#333333';
+                    base.strokeWidth = obj._tableStrokeWidth ?? 1;
+                    base.lineStyle = obj._tableLineStyle || 'solid';
+                    base.textLayer = obj._tableTextLayer || 'above';
+                    base.rowHeights = obj._tableRowHeights || [];
+                    base.colWidths = obj._tableColWidths || [];
+                    base.cells = this._serializeTableCells(obj);
+                    base.opacity = obj.opacity;
+                    if (obj.angle) base.angle = obj.angle;
                 } else {
                     return null;
                 }
@@ -3049,7 +5004,12 @@ class PDFEditor {
         return {
             kind: 'snapshot',
             objects: this.canvas.getObjects()
-                .filter((obj) => !obj._isLinkOverlay && !obj._isTableOverlay && !obj._isSearchHighlight)
+                .filter((obj) => (
+                    !obj._isLinkOverlay
+                    && !obj._isTableOverlay
+                    && !obj._isSearchHighlight
+                    && !obj._isTableResizeHandle
+                ))
                 .map((obj) => ({
                     id: this.ensureObjectId(obj),
                     json: obj.toObject(this._undoProps),
@@ -3125,7 +5085,8 @@ class PDFEditor {
             if (!snapshotIds.has(id)
                 && !obj._isLinkOverlay
                 && !obj._isTableOverlay
-                && !obj._isSearchHighlight) {
+                && !obj._isSearchHighlight
+                && !obj._isTableResizeHandle) {
                 this.canvas.remove(obj);
             }
         });

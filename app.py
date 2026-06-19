@@ -471,6 +471,20 @@ def scaled_view_bbox(page, bbox, scale):
     return [coord * scale for coord in view_bbox]
 
 
+def expand_text_redact_rect(page, rect, pad_x=2.0, pad_top=6.0, pad_bottom=3.0):
+    """Pad a text bbox so redaction covers ascenders and minor coordinate drift."""
+    if rect.is_empty:
+        return rect
+    page_rect = page.rect
+    expanded = fitz.Rect(
+        max(page_rect.x0, rect.x0 - pad_x),
+        max(page_rect.y0, rect.y0 - pad_top),
+        min(page_rect.x1, rect.x1 + pad_x),
+        min(page_rect.y1, rect.y1 + pad_bottom),
+    )
+    return expanded if not expanded.is_empty else rect
+
+
 def resolve_elem_pdf_bbox(page, elem, default_width, default_height):
     pdf_bbox = elem.get("pdf_bbox")
     if isinstance(pdf_bbox, list) and len(pdf_bbox) == 4:
@@ -2082,6 +2096,17 @@ def shape_finish_kwargs(stroke_color, fill_color, stroke_w, elem=None, fill=None
     return kwargs
 
 
+def table_stroke_width_pdf(elem):
+    """Map canvas stroke width to PDF line width; hairline (0) uses a minimal visible width."""
+    raw = float(elem.get("strokeWidth", 1) or 0)
+    stroke_color = parse_color_input(elem.get("stroke", "#333333"))
+    if not stroke_color:
+        return 0.0
+    if raw <= 0:
+        return 0.25
+    return raw / 2.0
+
+
 def draw_shape_rect(shape_obj, rect, corner_radius=0):
     radius = float(corner_radius or 0)
     if radius > 0:
@@ -2851,6 +2876,16 @@ def save_page(session_id, page_num):
             orig_bbox = elem.get("originalPdfBbox") or elem.get("pdf_bbox")
             if orig_bbox and len(orig_bbox) == 4:
                 areas_to_redact.append(fitz.Rect(orig_bbox))
+
+        etype = elem.get("type", "rect")
+        if etype in ("text", "textbox"):
+            try:
+                text_rect = fitz.Rect(resolve_elem_pdf_bbox(page, elem, 200, 40))
+                if not text_rect.is_empty:
+                    areas_to_redact.append(expand_text_redact_rect(page, text_rect))
+            except Exception:
+                pass
+
         new_elements.append(elem)
 
     for area in areas_to_redact:
@@ -2874,6 +2909,7 @@ def save_page(session_id, page_num):
     paths_list = []
     stickies = []
     stamps = []
+    tables = []
     freetexts = []
     inks = []
 
@@ -2890,6 +2926,8 @@ def save_page(session_id, page_num):
                 texts.append(elem)
         elif etype == "sticky":
             stickies.append(elem)
+        elif etype == "table":
+            tables.append(elem)
         elif etype == "image":
             images_list.append(elem)
         elif etype == "stamp":
@@ -3078,6 +3116,124 @@ def save_page(session_id, page_num):
                 shape_obj.finish(**shape_finish_kwargs(stroke_color, None, stroke_w, elem))
                 shape_obj.commit()
 
+    for elem in tables:
+        pdf_bbox = resolve_elem_pdf_bbox(page, elem, 180, 120)
+        rect = fitz.Rect(pdf_bbox)
+        if rect.is_empty:
+            continue
+
+        rows = max(1, min(20, int(elem.get("rows", 3) or 3)))
+        cols = max(1, min(20, int(elem.get("cols", 3) or 3)))
+        raw_row_heights = elem.get("rowHeights") or []
+        raw_col_widths = elem.get("colWidths") or []
+        row_heights = []
+        col_widths = []
+        if isinstance(raw_row_heights, list) and len(raw_row_heights) >= rows:
+            vals = [max(float(v or 0), 1.0) for v in raw_row_heights[:rows]]
+            total = sum(vals) or 1.0
+            row_heights = [rect.height * v / total for v in vals]
+        else:
+            row_heights = [rect.height / rows for _ in range(rows)]
+        if isinstance(raw_col_widths, list) and len(raw_col_widths) >= cols:
+            vals = [max(float(v or 0), 1.0) for v in raw_col_widths[:cols]]
+            total = sum(vals) or 1.0
+            col_widths = [rect.width * v / total for v in vals]
+        else:
+            col_widths = [rect.width / cols for _ in range(cols)]
+        fill_color = parse_color_input(elem.get("fill", "#ffffff"))
+        stroke_color = parse_color_input(elem.get("stroke", "#333333"))
+        stroke_w = table_stroke_width_pdf(elem)
+        finish_kw = shape_finish_kwargs(stroke_color, fill_color, stroke_w, elem)
+
+        shape_obj = page.new_shape()
+        shape_obj.draw_rect(rect)
+        shape_obj.finish(**finish_kw)
+        shape_obj.commit()
+
+        if stroke_color and stroke_w > 0:
+            line_finish_kw = shape_finish_kwargs(stroke_color, None, stroke_w, elem)
+            y = rect.y0
+            for row_idx in range(1, rows):
+                y += row_heights[row_idx - 1]
+                line_obj = page.new_shape()
+                line_obj.draw_line(fitz.Point(rect.x0, y), fitz.Point(rect.x1, y))
+                line_obj.finish(**line_finish_kw)
+                line_obj.commit()
+            x = rect.x0
+            for col_idx in range(1, cols):
+                x += col_widths[col_idx - 1]
+                line_obj = page.new_shape()
+                line_obj.draw_line(fitz.Point(x, rect.y0), fitz.Point(x, rect.y1))
+                line_obj.finish(**line_finish_kw)
+                line_obj.commit()
+
+        cells = elem.get("cells") or []
+        row_tops = [rect.y0]
+        for h in row_heights[:-1]:
+            row_tops.append(row_tops[-1] + h)
+        col_lefts = [rect.x0]
+        for w in col_widths[:-1]:
+            col_lefts.append(col_lefts[-1] + w)
+        for row_idx in range(rows):
+            row = cells[row_idx] if row_idx < len(cells) else []
+            if not isinstance(row, list):
+                continue
+            for col_idx in range(cols):
+                cell = row[col_idx] if col_idx < len(row) else {}
+                if isinstance(cell, str):
+                    cell_text = cell
+                    cell_image = None
+                    cell_font_size = 12
+                    cell_fill = "#000000"
+                    cell_align = "left"
+                elif isinstance(cell, dict):
+                    cell_text = cell.get("text", "")
+                    cell_image = cell.get("image")
+                    cell_font_size = float(cell.get("fontSize", 12))
+                    cell_fill = cell.get("fill", "#000000")
+                    cell_align = cell.get("textAlign", "left")
+                else:
+                    continue
+
+                cell_rect = fitz.Rect(
+                    col_lefts[col_idx],
+                    row_tops[row_idx],
+                    col_lefts[col_idx] + col_widths[col_idx],
+                    row_tops[row_idx] + row_heights[row_idx],
+                )
+                if cell_rect.is_empty:
+                    continue
+
+                if cell_image and isinstance(cell_image, str) and cell_image.startswith("data:"):
+                    try:
+                        b64_part = cell_image.split(",", 1)[1]
+                        img_bytes = base64.b64decode(b64_part)
+                        page.insert_image(cell_rect, stream=img_bytes, keep_proportion=True)
+                    except Exception:
+                        pass
+
+                if cell_text:
+                    text_color = parse_color_input(cell_fill) or (0, 0, 0)
+                    text_align = pdf_text_align(cell_align)
+                    font_size = max(cell_font_size / 2.0, 4)
+                    inset = fitz.Rect(
+                        cell_rect.x0 + 2,
+                        cell_rect.y0 + 2,
+                        cell_rect.x1 - 2,
+                        cell_rect.y1 - 2,
+                    )
+                    try:
+                        page.insert_textbox(
+                            inset,
+                            cell_text,
+                            fontname="helv",
+                            fontsize=font_size,
+                            color=text_color,
+                            align=text_align,
+                        )
+                    except Exception:
+                        pass
+
     for elem in inks:
         points_raw = elem.get("inkPoints") or elem.get("points") or []
         if not points_raw:
@@ -3127,22 +3283,35 @@ def save_page(session_id, page_num):
 
         opacity = float(elem.get("opacity", 1))
 
+        ascender_pad = max(2.0, font_size * 0.2)
+        draw_rect = fitz.Rect(
+            rect.x0,
+            max(page.rect.y0, rect.y0 - ascender_pad),
+            rect.x1,
+            rect.y1,
+        )
+
         if bg_color:
             shape_obj = page.new_shape()
-            shape_obj.draw_rect(rect)
+            shape_obj.draw_rect(draw_rect)
             shape_obj.finish(color=None, fill=bg_color)
+            shape_obj.commit()
+        else:
+            shape_obj = page.new_shape()
+            shape_obj.draw_rect(draw_rect)
+            shape_obj.finish(color=None, fill=(1, 1, 1))
             shape_obj.commit()
 
         min_height = font_size * 2.5
-        if rect.height < min_height:
-            rect = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + min_height)
+        if draw_rect.height < min_height:
+            draw_rect = fitz.Rect(draw_rect.x0, draw_rect.y0, draw_rect.x1, draw_rect.y0 + min_height)
 
         html_mode = elem.get("html") or elem.get("richHtml")
         inserted = False
         if html_mode:
             try:
                 html = text if "<" in text else f"<p>{text}</p>"
-                page.insert_htmlbox(rect, html)
+                page.insert_htmlbox(draw_rect, html)
                 inserted = True
             except Exception:
                 inserted = False
@@ -3150,7 +3319,7 @@ def save_page(session_id, page_num):
         if not inserted:
             try:
                 rc = page.insert_textbox(
-                    rect,
+                    draw_rect,
                     text,
                     fontname=pdf_font,
                     fontsize=max(font_size, 4),
@@ -3158,7 +3327,7 @@ def save_page(session_id, page_num):
                     align=text_align,
                 )
                 if rc < 0:
-                    expanded = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y1 + abs(rc) + font_size)
+                    expanded = fitz.Rect(draw_rect.x0, draw_rect.y0, draw_rect.x1, draw_rect.y1 + abs(rc) + font_size)
                     page.insert_textbox(
                         expanded,
                         text,
@@ -3170,7 +3339,7 @@ def save_page(session_id, page_num):
             except Exception:
                 try:
                     page.insert_textbox(
-                        rect,
+                        draw_rect,
                         text,
                         fontname="helv",
                         fontsize=max(font_size, 4),
@@ -3179,7 +3348,7 @@ def save_page(session_id, page_num):
                 except Exception:
                     pass
 
-        apply_text_markup_annots(page, rect, text, elem)
+        apply_text_markup_annots(page, draw_rect, text, elem)
 
     for elem in freetexts:
         text = elem.get("text", "")
@@ -3654,31 +3823,49 @@ def export_page_tables_csv(session_id, page_num):
     page = doc[page_num]
     buf = io.StringIO()
     writer = csv.writer(buf)
-    table_index = 0
+
+    index_arg = request.args.get("index")
+    selected_index = None
+    if index_arg is not None and str(index_arg).strip() != "":
+        try:
+            selected_index = int(index_arg)
+        except ValueError:
+            return jsonify({"error": "Invalid table index"}), 400
+        if selected_index < 0:
+            return jsonify({"error": "Table index out of range"}), 400
 
     try:
         finder = page.find_tables()
         tables = getattr(finder, "tables", finder) or []
-        for table in tables:
-            writer.writerow([f"--- Table {table_index + 1} ---"])
+        found = False
+        for idx, table in enumerate(tables):
+            if selected_index is not None and idx != selected_index:
+                continue
+            writer.writerow([f"--- Table {idx + 1} ---"])
             try:
                 for row in table.extract():
                     writer.writerow(row)
             except Exception:
                 pass
             writer.writerow([])
-            table_index += 1
+            found = True
+            if selected_index is not None:
+                break
     except Exception as exc:
         return jsonify({"error": f"Table export failed: {exc}"}), 500
+
+    if selected_index is not None and not found:
+        return jsonify({"error": "Table index out of range"}), 404
 
     data = buf.getvalue().encode("utf-8")
     out = io.BytesIO(data)
     out.seek(0)
+    suffix = f"-table-{selected_index + 1}" if selected_index is not None else "-tables"
     return send_file(
         out,
         mimetype="text/csv; charset=utf-8",
         as_attachment=True,
-        download_name=f"page-{page_num + 1}-tables.csv",
+        download_name=f"page-{page_num + 1}{suffix}.csv",
     )
 
 

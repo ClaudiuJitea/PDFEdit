@@ -109,6 +109,9 @@
                     <button class="tool-btn" data-tool="image" data-shortcut="I" title="Add Image (I)">
                         <i data-lucide="image-plus"></i>
                     </button>
+                    <button class="tool-btn" data-tool="table" data-shortcut="G" title="Insert Table (G)">
+                        <i data-lucide="table"></i>
+                    </button>
                     <!-- Shapes Toolbox -->
                     <div class="tool-dropdown-container" id="shape-tool-container">
                         <button class="tool-btn" data-tool="rect" data-shortcut="U" title="Shapes Tool (U)" id="btn-shape-main">
@@ -781,6 +784,129 @@
                     </div>
                 </div>
 
+                <div id="props-table" class="props-section" style="display:none">
+                    <h3 class="props-title">Table</h3>
+                    <p id="table-place-hint" class="props-description" style="display:none; font-size: 12px; color: var(--color-text-muted); margin-bottom: 12px; line-height: 1.4;">
+                        Click and drag on the page to draw a table. Double-click a cell to type. Use the Text or Image tool inside a cell for more content.
+                    </p>
+                    <p id="table-edit-hint" class="props-description" style="display:none; font-size: 12px; color: var(--color-text-muted); margin-bottom: 12px; line-height: 1.4;">
+                        Double-click a cell to edit text. Select a cell, then use Image to add a picture. Drag other objects into a cell to attach them.
+                    </p>
+                    <div class="prop-row">
+                        <div class="prop-group flex-1">
+                            <label class="prop-label">Rows</label>
+                            <input type="number" id="prop-table-rows" class="prop-input" min="1" max="20" step="1" value="3">
+                        </div>
+                        <div class="prop-group flex-1">
+                            <label class="prop-label">Columns</label>
+                            <input type="number" id="prop-table-cols" class="prop-input" min="1" max="20" step="1" value="3">
+                        </div>
+                    </div>
+                    <div class="prop-row">
+                        <div class="prop-group flex-1">
+                            <label class="prop-label">Fill Color</label>
+                            <div class="color-with-clear">
+                                <input type="color" id="prop-table-fill" class="prop-color" value="#ffffff">
+                                <button id="prop-table-clear-fill" class="color-clear-btn" title="No fill">✕</button>
+                            </div>
+                        </div>
+                        <div class="prop-group flex-1">
+                            <label class="prop-label">Line Color</label>
+                            <div class="color-with-clear">
+                                <input type="color" id="prop-table-stroke" class="prop-color" value="#333333">
+                                <button id="prop-table-clear-stroke" class="color-clear-btn" title="No lines">✕</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Line Thickness</label>
+                        <div class="prop-value-box compact" id="table-line-thickness-controls">
+                            <button class="prop-step-btn" type="button" data-step-target="prop-table-stroke-width" data-step="-1" title="Decrease line thickness">-</button>
+                            <input type="number" id="prop-table-stroke-width" class="prop-input prop-input-compact" min="0" max="20" step="1" value="1">
+                            <span class="prop-unit">px</span>
+                            <button class="prop-step-btn" type="button" data-step-target="prop-table-stroke-width" data-step="1" title="Increase line thickness">+</button>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Line Style</label>
+                        <div class="prop-chip-group prop-chip-group-table-lines">
+                            <button type="button" id="btn-table-stroke-none" class="prop-chip prop-chip-table-linestyle" data-table-stroke-mode="none" title="No grid lines">
+                                <span class="stroke-preview stroke-preview-none" aria-hidden="true"></span>
+                                <span>No lines</span>
+                            </button>
+                            <button class="prop-chip prop-chip-table-linestyle active" type="button" data-table-line-style="solid" title="Solid lines">
+                                <span class="linestyle-preview linestyle-preview-solid" aria-hidden="true"></span>
+                                <span>Solid</span>
+                            </button>
+                            <button class="prop-chip prop-chip-table-linestyle" type="button" data-table-line-style="dashed" title="Dashed lines">
+                                <span class="linestyle-preview linestyle-preview-dashed" aria-hidden="true"></span>
+                                <span>Dashed</span>
+                            </button>
+                            <button class="prop-chip prop-chip-table-linestyle" type="button" data-table-line-style="dotted" title="Dotted lines">
+                                <span class="linestyle-preview linestyle-preview-dotted" aria-hidden="true"></span>
+                                <span>Dotted</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Text Overlap</label>
+                        <select id="prop-table-text-layer" class="prop-select">
+                            <option value="above">Text above cell elements</option>
+                            <option value="below">Text below cell elements</option>
+                        </select>
+                    </div>
+                    <div id="table-cell-ops" class="prop-group" style="display:none">
+                        <label class="prop-label">Active cell</label>
+                        <p id="table-cell-position" class="form-summary-selected">Row 1, Col 1</p>
+                        <div class="table-cell-ops-grid">
+                            <button type="button" id="btn-table-insert-row-above" class="secondary-btn table-cell-op-btn" title="Insert row above">
+                                <i data-lucide="arrow-up" class="btn-icon-sm"></i>
+                                <span>Row above</span>
+                            </button>
+                            <button type="button" id="btn-table-insert-row-below" class="secondary-btn table-cell-op-btn" title="Insert row below">
+                                <i data-lucide="arrow-down" class="btn-icon-sm"></i>
+                                <span>Row below</span>
+                            </button>
+                            <button type="button" id="btn-table-insert-col-left" class="secondary-btn table-cell-op-btn" title="Insert column left">
+                                <i data-lucide="arrow-left" class="btn-icon-sm"></i>
+                                <span>Col left</span>
+                            </button>
+                            <button type="button" id="btn-table-insert-col-right" class="secondary-btn table-cell-op-btn" title="Insert column right">
+                                <i data-lucide="arrow-right" class="btn-icon-sm"></i>
+                                <span>Col right</span>
+                            </button>
+                            <button type="button" id="btn-table-delete-row" class="secondary-btn table-cell-op-btn" title="Delete row">
+                                <i data-lucide="minus" class="btn-icon-sm"></i>
+                                <span>Delete row</span>
+                            </button>
+                            <button type="button" id="btn-table-delete-col" class="secondary-btn table-cell-op-btn" title="Delete column">
+                                <i data-lucide="minus" class="btn-icon-sm"></i>
+                                <span>Delete col</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Layout</label>
+                        <button type="button" id="btn-table-distribute-evenly" class="secondary-btn" title="Reset row and column sizes to equal">
+                            <i data-lucide="columns-3" class="btn-icon-sm"></i>
+                            Distribute evenly
+                        </button>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">CSV</label>
+                        <div class="prop-row">
+                            <button type="button" id="btn-table-export-csv" class="secondary-btn flex-1" title="Export this table as CSV">
+                                <i data-lucide="download" class="btn-icon-sm"></i>
+                                Export
+                            </button>
+                            <button type="button" id="btn-table-import-csv" class="secondary-btn flex-1" title="Create table from CSV file">
+                                <i data-lucide="upload" class="btn-icon-sm"></i>
+                                Import
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="props-sticky" class="props-section" style="display:none">
                     <h3 class="props-title">Sticky Note</h3>
                     <div class="prop-group">
@@ -929,6 +1055,14 @@
                     <div id="tables-overlay-info" class="prop-group" style="display:none">
                         <label class="prop-label">Tables detected</label>
                         <p id="tables-count-text" class="form-summary-selected">0 tables</p>
+                        <div id="detected-table-actions" class="prop-group" style="display:none">
+                            <label class="prop-label" for="detected-table-select">Convert to editable</label>
+                            <select id="detected-table-select" class="prop-select"></select>
+                            <button type="button" id="btn-make-table-editable" class="secondary-btn" title="Create an editable table from detected data">
+                                <i data-lucide="table-2" class="btn-icon-sm"></i>
+                                Make editable
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -1484,6 +1618,38 @@
                             <span>Merge into one block</span>
                         </button>
                     </div>
+            <div id="context-table-section" class="context-menu-section" style="display:none">
+                <span class="context-menu-label">Table</span>
+                <button type="button" id="btn-context-table-row-above" class="context-menu-item" data-table-action="insertRowAbove" title="Insert row above">
+                    <i data-lucide="arrow-up" class="btn-icon-sm"></i>
+                    <span>Insert row above</span>
+                </button>
+                <button type="button" id="btn-context-table-row-below" class="context-menu-item" data-table-action="insertRowBelow" title="Insert row below">
+                    <i data-lucide="arrow-down" class="btn-icon-sm"></i>
+                    <span>Insert row below</span>
+                </button>
+                <button type="button" id="btn-context-table-col-left" class="context-menu-item" data-table-action="insertColLeft" title="Insert column left">
+                    <i data-lucide="arrow-left" class="btn-icon-sm"></i>
+                    <span>Insert column left</span>
+                </button>
+                <button type="button" id="btn-context-table-col-right" class="context-menu-item" data-table-action="insertColRight" title="Insert column right">
+                    <i data-lucide="arrow-right" class="btn-icon-sm"></i>
+                    <span>Insert column right</span>
+                </button>
+                <button type="button" id="btn-context-table-delete-row" class="context-menu-item" data-table-action="deleteRow" title="Delete row">
+                    <i data-lucide="minus" class="btn-icon-sm"></i>
+                    <span>Delete row</span>
+                </button>
+                <button type="button" id="btn-context-table-delete-col" class="context-menu-item" data-table-action="deleteCol" title="Delete column">
+                    <i data-lucide="minus" class="btn-icon-sm"></i>
+                    <span>Delete column</span>
+                </button>
+                <button type="button" id="btn-context-table-export-csv" class="context-menu-item" data-table-action="exportCsv" title="Export table as CSV">
+                    <i data-lucide="download" class="btn-icon-sm"></i>
+                    <span>Export table CSV</span>
+                </button>
+            </div>
+            <div id="context-table-divider" class="context-menu-divider" style="display:none"></div>
             <div id="context-ai-section" class="context-menu-section" style="display:none">
                 <span class="context-menu-label">AI text</span>
                 <button type="button" class="context-menu-item ai-context-action" data-ai-action="rewrite">
@@ -1515,6 +1681,7 @@
 
         <!-- Hidden file input for image insertion -->
         <input type="file" id="image-input" accept="image/png,image/jpeg,image/svg+xml,image/webp" hidden>
+        <input type="file" id="table-csv-input" accept=".csv,text/csv" hidden>
     </div>
 
     <script>

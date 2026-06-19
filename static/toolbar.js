@@ -9,11 +9,13 @@ class Toolbar {
         this.onFormDelete = null;
         this.onFormMatchSizes = null;
         this.onFormPropertiesChange = null;
+        this.onTableAction = null;
         this._boundElements = false;
     }
 
     init() {
         this._bindToolButtons();
+        this._bindColorValueFields();
         this._bindPropertyControls();
         this._bindFormControls();
         this._bindCompositeControls();
@@ -28,6 +30,270 @@ class Toolbar {
                 if (this.onToolChange) this.onToolChange(tool);
             });
         });
+    }
+
+    _bindColorValueFields() {
+        document.querySelectorAll('input.prop-color[type="color"]').forEach((colorInput) => {
+            if (colorInput.dataset.hexBound === 'true') return;
+
+            const hexInput = document.createElement('input');
+            hexInput.type = 'text';
+            hexInput.className = 'prop-color-hex';
+            hexInput.maxLength = 7;
+            hexInput.spellcheck = false;
+            hexInput.value = (colorInput.value || '#000000').toUpperCase();
+            hexInput.setAttribute('aria-label', `${colorInput.id || 'color'} hex value`);
+
+            colorInput.insertAdjacentElement('afterend', hexInput);
+            colorInput.dataset.hexBound = 'true';
+            colorInput.title = 'Open color picker';
+            colorInput.setAttribute('aria-label', `${colorInput.id || 'color'} color picker`);
+
+            const syncHexFromColor = () => {
+                hexInput.value = (colorInput.value || '#000000').toUpperCase();
+            };
+
+            const commitHexToColor = () => {
+                const normalized = this._normalizeHexColor(hexInput.value);
+                if (!normalized) {
+                    syncHexFromColor();
+                    return;
+                }
+                colorInput.value = normalized;
+                hexInput.value = normalized.toUpperCase();
+                colorInput.dispatchEvent(new Event('input', { bubbles: true }));
+                colorInput.dispatchEvent(new Event('change', { bubbles: true }));
+            };
+
+            const openPicker = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this._openAdaptiveColorPicker(colorInput, hexInput);
+            };
+
+            colorInput.addEventListener('mousedown', openPicker);
+            colorInput.addEventListener('click', openPicker);
+            colorInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    openPicker(e);
+                }
+            });
+            colorInput.addEventListener('input', syncHexFromColor);
+            colorInput.addEventListener('change', syncHexFromColor);
+            hexInput.addEventListener('change', commitHexToColor);
+            hexInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    commitHexToColor();
+                    hexInput.blur();
+                } else if (e.key === 'Escape') {
+                    syncHexFromColor();
+                    hexInput.blur();
+                }
+            });
+            hexInput.addEventListener('blur', commitHexToColor);
+        });
+    }
+
+    _ensureAdaptiveColorPicker() {
+        if (this._adaptiveColorPicker) return this._adaptiveColorPicker;
+
+        const popover = document.createElement('div');
+        popover.className = 'adaptive-color-popover';
+        popover.style.display = 'none';
+        popover.innerHTML = `
+            <div class="adaptive-color-header">
+                <span>Color</span>
+                <button type="button" class="adaptive-color-close" aria-label="Close color picker">×</button>
+            </div>
+            <div class="adaptive-color-main">
+                <div class="adaptive-color-preview" aria-hidden="true"></div>
+                <input type="text" class="adaptive-color-hex" maxlength="7" spellcheck="false" aria-label="Hex color">
+            </div>
+            <div class="adaptive-color-sliders">
+                <label><span>R</span><input type="range" min="0" max="255" data-channel="r"><input type="number" min="0" max="255" data-channel-number="r"></label>
+                <label><span>G</span><input type="range" min="0" max="255" data-channel="g"><input type="number" min="0" max="255" data-channel-number="g"></label>
+                <label><span>B</span><input type="range" min="0" max="255" data-channel="b"><input type="number" min="0" max="255" data-channel-number="b"></label>
+            </div>
+            <div class="adaptive-color-presets" aria-label="Preset colors"></div>
+        `;
+        document.body.appendChild(popover);
+
+        const presets = [
+            '#000000', '#333333', '#666666', '#999999', '#cccccc', '#ffffff',
+            '#ef4444', '#f97316', '#f59e0b', '#eab308', '#84cc16', '#22c55e',
+            '#14b8a6', '#06b6d4', '#0ea5e9', '#3b82f6', '#6366f1', '#8b5cf6',
+            '#a855f7', '#d946ef', '#ec4899', '#f43f5e', '#01696f', '#4f98a3',
+        ];
+        const presetWrap = popover.querySelector('.adaptive-color-presets');
+        presets.forEach((hex) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'adaptive-color-preset';
+            btn.style.setProperty('--preset-color', hex);
+            btn.dataset.color = hex;
+            btn.title = hex.toUpperCase();
+            presetWrap.appendChild(btn);
+        });
+
+        const close = () => this._closeAdaptiveColorPicker();
+        popover.querySelector('.adaptive-color-close').addEventListener('click', close);
+
+        document.addEventListener('mousedown', (e) => {
+            if (popover.style.display === 'none') return;
+            const active = this._activeAdaptiveColorInput;
+            if (popover.contains(e.target) || active === e.target) return;
+            close();
+        });
+        window.addEventListener('resize', () => this._positionAdaptiveColorPicker());
+        window.addEventListener('scroll', () => this._positionAdaptiveColorPicker(), true);
+
+        const setFromHex = (hex, commit = true) => {
+            const normalized = this._normalizeHexColor(hex);
+            if (!normalized) return;
+            this._setAdaptiveColor(normalized, commit);
+        };
+
+        popover.querySelector('.adaptive-color-hex').addEventListener('input', (e) => {
+            const normalized = this._normalizeHexColor(e.target.value);
+            if (normalized) this._setAdaptiveColor(normalized, true);
+        });
+        popover.querySelector('.adaptive-color-hex').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                setFromHex(e.target.value, true);
+                this._closeAdaptiveColorPicker();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                this._closeAdaptiveColorPicker();
+            }
+        });
+        popover.querySelectorAll('[data-channel], [data-channel-number]').forEach((input) => {
+            input.addEventListener('input', (e) => {
+                const channel = e.target.dataset.channel || e.target.dataset.channelNumber;
+                const value = Math.max(0, Math.min(255, parseInt(e.target.value, 10) || 0));
+                popover.querySelector(`[data-channel="${channel}"]`).value = value;
+                popover.querySelector(`[data-channel-number="${channel}"]`).value = value;
+                const rgb = this._readAdaptiveRgb();
+                this._setAdaptiveColor(this._rgbToHex(rgb.r, rgb.g, rgb.b), true);
+            });
+        });
+        popover.querySelectorAll('.adaptive-color-preset').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                this._setAdaptiveColor(btn.dataset.color, true);
+            });
+        });
+
+        this._adaptiveColorPicker = popover;
+        return popover;
+    }
+
+    _openAdaptiveColorPicker(colorInput, hexInput) {
+        const popover = this._ensureAdaptiveColorPicker();
+        this._activeAdaptiveColorInput = colorInput;
+        this._activeAdaptiveHexInput = hexInput;
+        this._setAdaptiveColor(colorInput.value || '#000000', false);
+        popover.style.display = 'block';
+        this._positionAdaptiveColorPicker();
+        const hex = popover.querySelector('.adaptive-color-hex');
+        if (hex) {
+            hex.focus();
+            hex.select();
+        }
+    }
+
+    _closeAdaptiveColorPicker() {
+        if (!this._adaptiveColorPicker) return;
+        this._adaptiveColorPicker.style.display = 'none';
+        this._activeAdaptiveColorInput = null;
+        this._activeAdaptiveHexInput = null;
+    }
+
+    _positionAdaptiveColorPicker() {
+        const popover = this._adaptiveColorPicker;
+        const target = this._activeAdaptiveColorInput;
+        if (!popover || !target || popover.style.display === 'none') return;
+
+        const margin = 8;
+        const rect = target.getBoundingClientRect();
+        const popoverRect = popover.getBoundingClientRect();
+        const width = popoverRect.width || 260;
+        const height = popoverRect.height || 320;
+        let left = rect.left;
+        let top = rect.bottom + 6;
+
+        if (left + width > window.innerWidth - margin) {
+            left = window.innerWidth - width - margin;
+        }
+        if (top + height > window.innerHeight - margin) {
+            top = rect.top - height - 6;
+        }
+        left = Math.max(margin, left);
+        top = Math.max(margin, Math.min(top, window.innerHeight - height - margin));
+
+        popover.style.left = `${left}px`;
+        popover.style.top = `${top}px`;
+    }
+
+    _hexToRgb(hex) {
+        const normalized = this._normalizeHexColor(hex) || '#000000';
+        return {
+            r: parseInt(normalized.slice(1, 3), 16),
+            g: parseInt(normalized.slice(3, 5), 16),
+            b: parseInt(normalized.slice(5, 7), 16),
+        };
+    }
+
+    _rgbToHex(r, g, b) {
+        return '#' + [r, g, b]
+            .map((n) => Math.max(0, Math.min(255, Number(n) || 0)).toString(16).padStart(2, '0'))
+            .join('');
+    }
+
+    _readAdaptiveRgb() {
+        const popover = this._adaptiveColorPicker;
+        return {
+            r: parseInt(popover.querySelector('[data-channel="r"]').value, 10) || 0,
+            g: parseInt(popover.querySelector('[data-channel="g"]').value, 10) || 0,
+            b: parseInt(popover.querySelector('[data-channel="b"]').value, 10) || 0,
+        };
+    }
+
+    _setAdaptiveColor(hex, commit = true) {
+        const normalized = this._normalizeHexColor(hex);
+        if (!normalized || !this._adaptiveColorPicker) return;
+        const popover = this._adaptiveColorPicker;
+        const rgb = this._hexToRgb(normalized);
+
+        popover.querySelector('.adaptive-color-preview').style.background = normalized;
+        popover.querySelector('.adaptive-color-hex').value = normalized.toUpperCase();
+        ['r', 'g', 'b'].forEach((ch) => {
+            popover.querySelector(`[data-channel="${ch}"]`).value = rgb[ch];
+            popover.querySelector(`[data-channel-number="${ch}"]`).value = rgb[ch];
+        });
+
+        if (this._activeAdaptiveColorInput) {
+            this._activeAdaptiveColorInput.value = normalized;
+            if (this._activeAdaptiveHexInput) {
+                this._activeAdaptiveHexInput.value = normalized.toUpperCase();
+            }
+            if (commit) {
+                this._activeAdaptiveColorInput.dispatchEvent(new Event('input', { bubbles: true }));
+                this._activeAdaptiveColorInput.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        }
+    }
+
+    _normalizeHexColor(value) {
+        const raw = String(value || '').trim();
+        const hex = raw.startsWith('#') ? raw.slice(1) : raw;
+        if (/^[0-9a-fA-F]{3}$/.test(hex)) {
+            return `#${hex.split('').map((ch) => ch + ch).join('')}`.toLowerCase();
+        }
+        if (/^[0-9a-fA-F]{6}$/.test(hex)) {
+            return `#${hex}`.toLowerCase();
+        }
+        return null;
     }
 
     _bindPropertyControls() {
@@ -115,6 +381,29 @@ class Toolbar {
             if (this.onPropertyChange) this.onPropertyChange('shape', 'stroke', 'transparent');
         });
 
+        const tableProps = ['prop-table-rows', 'prop-table-cols', 'prop-table-fill', 'prop-table-stroke', 'prop-table-stroke-width', 'prop-table-text-layer'];
+        tableProps.forEach((id) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            const evt = el.tagName === 'SELECT' || el.type === 'color' ? 'change' : 'input';
+            el.addEventListener(evt, () => this._onTablePropChange(id));
+        });
+        const clearTableFill = document.getElementById('prop-table-clear-fill');
+        if (clearTableFill) {
+            clearTableFill.addEventListener('click', () => {
+                if (this.onPropertyChange) this.onPropertyChange('table', 'fill', 'transparent');
+            });
+        }
+        const clearTableStroke = document.getElementById('prop-table-clear-stroke');
+        if (clearTableStroke) {
+            clearTableStroke.addEventListener('click', () => {
+                if (this.onPropertyChange) this.onPropertyChange('table', 'stroke', 'transparent');
+                this._syncTableLinesMode('transparent');
+            });
+        }
+
+        this._bindTableActionButtons();
+
         const brushProps = ['prop-brush-color', 'prop-brush-width', 'prop-brush-opacity'];
         brushProps.forEach((id) => {
             const el = document.getElementById(id);
@@ -162,6 +451,22 @@ class Toolbar {
                 if (this.onPropertyChange) this.onPropertyChange('brush', 'lineStyle', value);
             });
         });
+
+        document.querySelectorAll('[data-table-line-style]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const value = btn.dataset.tableLineStyle || 'solid';
+                this._ensureTableStrokeVisible();
+                this._syncTableLineStyle(value);
+                if (this.onPropertyChange) this.onPropertyChange('table', 'lineStyle', value);
+            });
+        });
+        const noTableLinesBtn = document.getElementById('btn-table-stroke-none');
+        if (noTableLinesBtn) {
+            noTableLinesBtn.addEventListener('click', () => {
+                if (this.onPropertyChange) this.onPropertyChange('table', 'stroke', 'transparent');
+                this._syncTableLinesMode('transparent');
+            });
+        }
 
         const imgProps = ['prop-img-width', 'prop-img-height', 'prop-img-opacity', 'prop-img-rotation'];
         imgProps.forEach((id) => {
@@ -225,8 +530,16 @@ class Toolbar {
 
         document.querySelectorAll('[data-chip-target] .prop-chip').forEach((btn) => {
             btn.addEventListener('click', () => {
+                if (btn.dataset.tableStrokeMode === 'none') {
+                    if (this.onPropertyChange) this.onPropertyChange('table', 'stroke', 'transparent');
+                    this._syncTableLinesMode('transparent');
+                    return;
+                }
                 const group = btn.closest('[data-chip-target]');
                 if (!group) return;
+                if (group.dataset.chipTarget === 'prop-table-stroke-width') {
+                    this._ensureTableStrokeVisible();
+                }
                 this._setControlValue(group.dataset.chipTarget, btn.dataset.value, true);
             });
         });
@@ -467,9 +780,46 @@ class Toolbar {
         const group = document.querySelector(`[data-chip-target="${controlId}"]`);
         if (!group) return;
 
-        group.querySelectorAll('.prop-chip').forEach((btn) => {
+        group.querySelectorAll('.prop-chip[data-value]').forEach((btn) => {
             const buttonValue = String(Number.parseFloat(btn.dataset.value));
             btn.classList.toggle('active', buttonValue === normalizedValue);
+        });
+    }
+
+    _ensureTableStrokeVisible() {
+        const active = this.editor?.getActiveObject?.();
+        const cellTarget = this.editor?.getTableCellTargetFromSelection?.();
+        const table = active?._elementType === 'table' ? active : cellTarget?.table;
+        const cfg = table ? this.editor.getTableConfigFromGroup(table) : null;
+        const defaults = this.editor?.tableDefaults;
+        const currentStroke = cfg?.stroke ?? defaults?.stroke;
+        if (currentStroke && currentStroke !== 'transparent') return;
+
+        const restore = (defaults?.stroke && defaults.stroke !== 'transparent')
+            ? defaults.stroke
+            : '#333333';
+        if (this.onPropertyChange) this.onPropertyChange('table', 'stroke', restore);
+        this._syncTableLinesMode(restore);
+    }
+
+    _syncTableLinesMode(stroke) {
+        const isNone = !stroke || stroke === 'transparent';
+        const noneBtn = document.getElementById('btn-table-stroke-none');
+        if (noneBtn) noneBtn.classList.toggle('active', isNone);
+
+        const thicknessControls = document.getElementById('table-line-thickness-controls');
+        if (thicknessControls) thicknessControls.classList.toggle('is-disabled', isNone);
+
+        if (isNone) {
+            document.querySelectorAll('[data-table-line-style]').forEach((btn) => {
+                btn.classList.remove('active');
+            });
+        }
+    }
+
+    _syncTableLineStyle(lineStyle = 'solid') {
+        document.querySelectorAll('[data-table-line-style]').forEach((btn) => {
+            btn.classList.toggle('active', btn.dataset.tableLineStyle === lineStyle);
         });
     }
 
@@ -582,6 +932,58 @@ class Toolbar {
             case 'prop-sticky-opacity':
                 this._syncChipGroup(id, val);
                 this.onPropertyChange('sticky', 'opacity', parseFloat(val) / 100);
+                break;
+        }
+    }
+
+    _bindTableActionButtons() {
+        const actions = [
+            ['btn-table-insert-row-above', 'insertRowAbove'],
+            ['btn-table-insert-row-below', 'insertRowBelow'],
+            ['btn-table-insert-col-left', 'insertColLeft'],
+            ['btn-table-insert-col-right', 'insertColRight'],
+            ['btn-table-delete-row', 'deleteRow'],
+            ['btn-table-delete-col', 'deleteCol'],
+            ['btn-table-distribute-evenly', 'distributeEvenly'],
+            ['btn-table-export-csv', 'exportCsv'],
+            ['btn-table-import-csv', 'importCsv'],
+        ];
+        actions.forEach(([id, action]) => {
+            const btn = document.getElementById(id);
+            if (!btn) return;
+            btn.addEventListener('click', () => {
+                if (this.onTableAction) this.onTableAction(action);
+            });
+        });
+    }
+
+    _onTablePropChange(id) {
+        if (!this.onPropertyChange || this._syncingTableProps) return;
+        const el = document.getElementById(id);
+        if (!el) return;
+
+        switch (id) {
+            case 'prop-table-rows':
+                this.onPropertyChange('table', 'rows', parseInt(el.value, 10) || 3);
+                break;
+            case 'prop-table-cols':
+                this.onPropertyChange('table', 'cols', parseInt(el.value, 10) || 3);
+                break;
+            case 'prop-table-fill':
+                this.onPropertyChange('table', 'fill', el.value);
+                break;
+            case 'prop-table-stroke':
+                if (el.value && el.value !== 'transparent') {
+                    this._syncTableLinesMode(el.value);
+                }
+                this.onPropertyChange('table', 'stroke', el.value);
+                break;
+            case 'prop-table-stroke-width':
+                this._ensureTableStrokeVisible();
+                this.onPropertyChange('table', 'strokeWidth', parseFloat(el.value) || 0);
+                break;
+            case 'prop-table-text-layer':
+                this.onPropertyChange('table', 'textLayer', el.value);
                 break;
         }
     }
@@ -722,12 +1124,27 @@ class Toolbar {
 
         this._hideAllProps();
 
+        if (obj._isTableCellText) {
+            const table = this.editor?._getTableFrame(obj._tableId);
+            if (table) {
+                this._showTableProps(table);
+                this._showTextProps(obj);
+                this.syncTableCellOps({ table, row: obj._cellRow, col: obj._cellCol });
+                return;
+            }
+        }
+
         if (obj.type === 'textbox' || obj.type === 'i-text' || obj.type === 'text') {
             this._showTextProps(obj);
         } else if (obj.type === 'image') {
             this._showImageProps(obj);
         } else if (obj._elementType === 'sticky') {
             this._showStickyProps(obj);
+        } else if (obj._elementType === 'table') {
+            this._showTableProps(obj);
+            this.syncTableCellOps(obj._activeCell
+                ? { table: obj, row: obj._activeCell.row, col: obj._activeCell.col }
+                : null);
         } else if (obj.type === 'rect' || obj.type === 'ellipse' || obj.type === 'polygon' || obj._elementType === 'star') {
             this._showShapeProps(obj);
         } else if (obj.type === 'line') {
@@ -900,6 +1317,8 @@ class Toolbar {
         const multiText = document.getElementById('props-multi-text');
         if (multiText) multiText.style.display = 'none';
         document.getElementById('props-shape').style.display = 'none';
+        const tableProps = document.getElementById('props-table');
+        if (tableProps) tableProps.style.display = 'none';
         document.getElementById('props-image').style.display = 'none';
         document.getElementById('props-sticky').style.display = 'none';
         document.getElementById('props-page').style.display = 'none';
@@ -922,6 +1341,88 @@ class Toolbar {
         const editHint = document.getElementById('stamp-edit-hint');
         if (placeHint) placeHint.style.display = mode === 'place' ? 'block' : 'none';
         if (editHint) editHint.style.display = mode === 'edit' ? 'block' : 'none';
+    }
+
+    showTableProperties(mode = 'place') {
+        this._hideAllProps();
+        const panel = document.getElementById('props-table');
+        if (!panel) return;
+        panel.style.display = 'block';
+        const placeHint = document.getElementById('table-place-hint');
+        const editHint = document.getElementById('table-edit-hint');
+        if (placeHint) placeHint.style.display = mode === 'place' ? 'block' : 'none';
+        if (editHint) editHint.style.display = mode === 'edit' ? 'block' : 'none';
+        if (mode === 'place') {
+            this.syncTableDefaults(this.editor?.tableDefaults);
+            this.syncTableCellOps(null);
+        }
+    }
+
+    _showTableProps(obj) {
+        this.showTableProperties('edit');
+        this.syncTablePropsFromObject(obj);
+    }
+
+    syncTableCellOps(cellTarget) {
+        const section = document.getElementById('table-cell-ops');
+        const positionEl = document.getElementById('table-cell-position');
+        if (!section) return;
+
+        if (!cellTarget?.table || cellTarget.row == null || cellTarget.col == null) {
+            section.style.display = 'none';
+            return;
+        }
+
+        section.style.display = 'block';
+        if (positionEl) {
+            positionEl.textContent = `Row ${cellTarget.row + 1}, Col ${cellTarget.col + 1}`;
+        }
+    }
+
+    syncTableDefaults(defaults) {
+        if (!defaults) return;
+        this._syncingTableProps = true;
+        const rowsEl = document.getElementById('prop-table-rows');
+        const colsEl = document.getElementById('prop-table-cols');
+        const fillEl = document.getElementById('prop-table-fill');
+        const strokeEl = document.getElementById('prop-table-stroke');
+        const strokeWidthEl = document.getElementById('prop-table-stroke-width');
+        const textLayerEl = document.getElementById('prop-table-text-layer');
+        if (rowsEl) rowsEl.value = defaults.rows ?? 3;
+        if (colsEl) colsEl.value = defaults.cols ?? 3;
+        if (fillEl && defaults.fill && defaults.fill !== 'transparent') this._setColorInput('prop-table-fill', defaults.fill.slice(0, 7));
+        if (strokeEl && defaults.stroke && defaults.stroke !== 'transparent') this._setColorInput('prop-table-stroke', defaults.stroke.slice(0, 7));
+        if (strokeWidthEl) {
+            strokeWidthEl.value = defaults.strokeWidth ?? 1;
+        }
+        if (textLayerEl) textLayerEl.value = defaults.textLayer || 'above';
+        this._syncTableLineStyle(defaults.lineStyle || 'solid');
+        this._syncTableLinesMode(defaults.stroke);
+        this._syncingTableProps = false;
+    }
+
+    syncTablePropsFromObject(obj) {
+        if (!obj || obj._elementType !== 'table') return;
+        const cfg = this.editor?.getTableConfigFromGroup(obj);
+        if (!cfg) return;
+        this._syncingTableProps = true;
+        const rowsEl = document.getElementById('prop-table-rows');
+        const colsEl = document.getElementById('prop-table-cols');
+        const fillEl = document.getElementById('prop-table-fill');
+        const strokeEl = document.getElementById('prop-table-stroke');
+        const strokeWidthEl = document.getElementById('prop-table-stroke-width');
+        const textLayerEl = document.getElementById('prop-table-text-layer');
+        if (rowsEl) rowsEl.value = cfg.rows ?? 3;
+        if (colsEl) colsEl.value = cfg.cols ?? 3;
+        if (fillEl && cfg.fill && cfg.fill !== 'transparent') this._setColorInput('prop-table-fill', cfg.fill.slice(0, 7));
+        if (strokeEl && cfg.stroke && cfg.stroke !== 'transparent') this._setColorInput('prop-table-stroke', cfg.stroke.slice(0, 7));
+        if (strokeWidthEl) {
+            strokeWidthEl.value = cfg.strokeWidth ?? 1;
+        }
+        if (textLayerEl) textLayerEl.value = cfg.textLayer || 'above';
+        this._syncTableLineStyle(cfg.lineStyle || 'solid');
+        this._syncTableLinesMode(cfg.stroke);
+        this._syncingTableProps = false;
     }
 
     _showStampProps(obj) {
@@ -955,6 +1456,10 @@ class Toolbar {
         if (!el || !hex) return;
         if (hex.startsWith('#') && hex.length >= 7) {
             el.value = hex.slice(0, 7);
+            const hexInput = el.nextElementSibling;
+            if (hexInput?.classList?.contains('prop-color-hex')) {
+                hexInput.value = el.value.toUpperCase();
+            }
         }
         if (id === 'prop-stamp-accent') {
             this._syncStampAccentHex(hex);
@@ -1102,7 +1607,7 @@ class Toolbar {
 
         const strokeHex = this._colorToHex(settings.color || '#01696f');
         if (settings.color && settings.color !== 'transparent') {
-            document.getElementById('prop-brush-color').value = strokeHex;
+            this._setColorInput('prop-brush-color', strokeHex);
         }
 
         this._setControlValue('prop-brush-width', settings.width || 2);
@@ -1123,11 +1628,11 @@ class Toolbar {
         document.getElementById('prop-font-family').value = obj.fontFamily || 'Helvetica';
         document.getElementById('prop-font-size').value = Math.round(obj.fontSize || 16);
         document.getElementById('prop-font-weight').value = String(this._fontWeightValue(obj));
-        document.getElementById('prop-text-color').value = this._colorToHex(obj.fill || '#000000');
+        this._setColorInput('prop-text-color', this._colorToHex(obj.fill || '#000000'));
 
         const bgColor = obj.backgroundColor;
         if (bgColor && bgColor !== 'transparent') {
-            document.getElementById('prop-text-bg').value = this._colorToHex(bgColor);
+            this._setColorInput('prop-text-bg', this._colorToHex(bgColor));
         }
 
         const lineHeight = obj.lineHeight != null ? obj.lineHeight : 1.2;
@@ -1139,7 +1644,7 @@ class Toolbar {
         const strokeW = obj.strokeWidth || 0;
         this._setControlValue('prop-text-stroke-width', strokeW);
         if (obj.stroke && obj.stroke !== 'transparent') {
-            document.getElementById('prop-text-stroke-color').value = this._colorToHex(obj.stroke);
+            this._setColorInput('prop-text-stroke-color', this._colorToHex(obj.stroke));
         }
 
         const opacity = Math.round((obj.opacity || 1) * 100);
@@ -1179,10 +1684,10 @@ class Toolbar {
         const fillHex = this._colorToHex(obj.fill || 'transparent');
         const strokeHex = this._colorToHex(obj.stroke || 'transparent');
         if (obj.fill && obj.fill !== 'transparent') {
-            document.getElementById('prop-fill').value = fillHex;
+            this._setColorInput('prop-fill', fillHex);
         }
         if (obj.stroke && obj.stroke !== 'transparent') {
-            document.getElementById('prop-stroke').value = strokeHex;
+            this._setColorInput('prop-stroke', strokeHex);
         }
 
         this._setControlValue('prop-stroke-width', obj.strokeWidth || 2);

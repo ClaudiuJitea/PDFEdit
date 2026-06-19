@@ -100,6 +100,7 @@ class App {
         this.toolbar.onFormDelete = () => this._deleteFormField(this.selectedFormXref);
         this.toolbar.onFormMatchSizes = (dimension) => this._matchFormFieldSizes(dimension);
         this.toolbar.onFormPropertiesChange = (properties) => this._onFormPropertiesChange(properties);
+        this.toolbar.onTableAction = (action) => this._onTableAction(action);
         this.formLayer.onFieldSelected = (field, selectedFields) => this._onFormFieldSelected(field, selectedFields);
         this.formLayer.onFieldChanged = (field) => this._onFormFieldChanged(field);
         this.formLayer.onFieldsBatchChanged = (fields) => this._onFormFieldsBatchChanged(fields);
@@ -189,6 +190,9 @@ class App {
             }
         };
         this.editor.onDrawingComplete = (createdObject) => {
+            if (createdObject?._elementType === 'table') {
+                this._showToast('Double-click a cell to type, or use Text/Image tools inside a cell', 'info');
+            }
             this._selectToolAfterDraw(createdObject);
         };
         this.editor.onLinkAreaDrawn = (area) => this._onLinkAreaDrawn(area);
@@ -326,6 +330,12 @@ class App {
             contextMenuDividerAi: document.getElementById('context-menu-divider-ai'),
             btnMergeTextBlocks: document.getElementById('btn-merge-text-blocks'),
             btnContextMergeText: document.getElementById('btn-context-merge-text'),
+            contextTableSection: document.getElementById('context-table-section'),
+            contextTableDivider: document.getElementById('context-table-divider'),
+            btnMakeTableEditable: document.getElementById('btn-make-table-editable'),
+            detectedTableSelect: document.getElementById('detected-table-select'),
+            detectedTableActions: document.getElementById('detected-table-actions'),
+            tableCsvInput: document.getElementById('table-csv-input'),
         };
 
         try {
@@ -505,6 +515,14 @@ class App {
         this.els.editorContextMenu?.addEventListener('click', (e) => {
             if (e.target.closest('#btn-context-merge-text')) {
                 runContextMerge(e);
+                return;
+            }
+            const tableBtn = e.target.closest('[data-table-action]');
+            if (tableBtn) {
+                e.preventDefault();
+                e.stopPropagation();
+                this._onTableAction(tableBtn.dataset.tableAction, this._contextMenuTableTarget);
+                this._hideCanvasContextMenu();
             }
         });
         if (this.els.btnDetectTables) {
@@ -512,6 +530,12 @@ class App {
         }
         if (this.els.btnExportTables) {
             this.els.btnExportTables.addEventListener('click', () => this._exportTablesCsv());
+        }
+        if (this.els.btnMakeTableEditable) {
+            this.els.btnMakeTableEditable.addEventListener('click', () => this._makeDetectedTableEditable());
+        }
+        if (this.els.tableCsvInput) {
+            this.els.tableCsvInput.addEventListener('change', (e) => this._onTableCsvFileSelected(e));
         }
         this.els.btnUndo.addEventListener('click', () => this._undo());
         this.els.btnRedo.addEventListener('click', () => this._redo());
@@ -671,7 +695,24 @@ class App {
             }
 
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
-                if (e.key === 'Escape') e.target.blur();
+                if (this.editor.handleTableCellKeyboard?.(e)) {
+                    e.preventDefault();
+                    return;
+                }
+                if (e.key === 'Escape') {
+                    const active = this.editor.getActiveObject();
+                    if (active?._isTableCellText && active.isEditing) {
+                        active.exitEditing();
+                        e.preventDefault();
+                        return;
+                    }
+                    e.target.blur();
+                }
+                return;
+            }
+
+            if (this.editor.handleTableCellKeyboard?.(e)) {
+                e.preventDefault();
                 return;
             }
 
@@ -766,6 +807,9 @@ class App {
                     break;
                 case 'i':
                     this._onToolChange('image');
+                    break;
+                case 'g':
+                    this._onToolChange('table');
                     break;
                 case 'r':
                     this._onToolChange('rect');
@@ -1733,7 +1777,19 @@ class App {
         const textObjects = (context.selectedObjects || []).filter((o) => this.editor.isTextObject(o));
         this._contextMenuTextObjects = textObjects;
 
-        const showPageAlign = textObjects.length >= 2;
+        const tableContext = context.tableCellHit
+            ? {
+                table: context.tableCellHit.table,
+                row: context.tableCellHit.row,
+                col: context.tableCellHit.col,
+            }
+            : this.editor.getTableContextFromTarget?.(target);
+        this._contextMenuTableTarget = tableContext;
+        if (tableContext?.table) {
+            tableContext.table._activeCell = { row: tableContext.row, col: tableContext.col };
+        }
+
+        const showPageAlign = textObjects.length >= 2 && !tableContext;
         this.els.contextAlignSection.style.display = showPageAlign ? 'block' : 'none';
         this.els.contextMenuDivider.style.display = showPageAlign ? 'block' : 'none';
 
@@ -1748,6 +1804,14 @@ class App {
         }
         if (this.els.contextMenuDividerAi) {
             this.els.contextMenuDividerAi.style.display = showAi ? 'block' : 'none';
+        }
+
+        const showTable = !!tableContext;
+        if (this.els.contextTableSection) {
+            this.els.contextTableSection.style.display = showTable ? 'block' : 'none';
+        }
+        if (this.els.contextTableDivider) {
+            this.els.contextTableDivider.style.display = showTable ? 'block' : 'none';
         }
 
         menu.style.display = 'block';
@@ -1797,6 +1861,7 @@ class App {
     _hideCanvasContextMenu() {
         this.els.editorContextMenu.style.display = 'none';
         this._contextMenuTextObjects = null;
+        this._contextMenuTableTarget = null;
     }
 
     _deleteSelectedObjects() {
@@ -2030,7 +2095,7 @@ class App {
     _selectToolAfterDraw(createdObject) {
         const placementTools = new Set([
             'stamp', 'rect', 'ellipse', 'line', 'star',
-            'highlight', 'redaction', 'sticky', 'freehand',
+            'highlight', 'redaction', 'sticky', 'freehand', 'table',
         ]);
         if (!placementTools.has(this.toolbar.activeTool) && !placementTools.has(this.editor.currentTool)) {
             return;
@@ -2104,6 +2169,12 @@ class App {
 
         if (tool === 'image') {
             this.formLayer.setInteractive(false);
+            const cellTarget = this.editor.getTableCellTargetFromSelection?.();
+            if (cellTarget) {
+                this.els.imageInput.click();
+                this._showContextProperties();
+                return;
+            }
             this.els.imageInput.click();
             this.toolbar.setActiveTool('select');
             this.editor.setTool('select');
@@ -2174,6 +2245,21 @@ class App {
                 this.toolbar._showStampProps(active);
             } else {
                 this.toolbar.showStampProperties('place');
+            }
+            return;
+        }
+
+        if (this.toolbar.activeTool === 'table') {
+            const active = this.editor.getActiveObject();
+            const cellTarget = this.editor.getTableCellTargetFromSelection?.();
+            const table = active?._elementType === 'table' ? active : cellTarget?.table;
+            if (table) {
+                this.toolbar._showTableProps(table);
+                this.toolbar.syncTableCellOps(cellTarget || (table._activeCell
+                    ? { table, row: table._activeCell.row, col: table._activeCell.col }
+                    : null));
+            } else {
+                this.toolbar.showTableProperties('place');
             }
             return;
         }
@@ -2354,6 +2440,25 @@ class App {
             return;
         }
 
+        if (type === 'table') {
+            const active = this.editor.getActiveObject();
+            const cellTarget = this.editor.getTableCellTargetFromSelection?.();
+            const table = active?._elementType === 'table' ? active : cellTarget?.table;
+            if (table) {
+                const updated = prop === 'textLayer'
+                    ? this.editor.setTableTextLayer(table, value)
+                    : this.editor.rebuildTable(table, { [prop]: value });
+                if (updated) {
+                    this.toolbar.syncTablePropsFromObject(updated);
+                    this._markDirty();
+                }
+            } else {
+                this.editor.setTableDefault(prop, value);
+                this.toolbar.syncTableDefaults(this.editor.tableDefaults);
+            }
+            return;
+        }
+
         const obj = this.editor.getActiveObject();
         if (!obj) return;
 
@@ -2409,6 +2514,10 @@ class App {
 
         if (obj.origin === 'pdf') {
             obj._modified = true;
+        }
+
+        if (obj._isTableCellText) {
+            this.editor._enforceTableCellTextBounds(obj, { allowRevert: false });
         }
 
         obj.setCoords();
@@ -2718,8 +2827,12 @@ class App {
         const reader = new FileReader();
         reader.onload = async (ev) => {
             const dataUrl = ev.target.result;
-            await this.editor.addImage(dataUrl);
+            const cellTarget = this.editor.getTableCellTargetFromSelection?.();
+            await this.editor.addImage(dataUrl, cellTarget);
             this._recordUndoState();
+            if (cellTarget) {
+                this._showToast('Image added to table cell', 'success');
+            }
         };
         reader.readAsDataURL(file);
         e.target.value = '';
@@ -4220,6 +4333,7 @@ class App {
             if (this.els.btnExportTables) {
                 this.els.btnExportTables.style.display = data.count > 0 ? 'inline-flex' : 'none';
             }
+            this._syncDetectedTableSelect();
             this._showToast(`${data.count} table(s) found`, 'success');
         } catch (err) {
             this._showToast(err.message, 'error');
@@ -4235,6 +4349,176 @@ class App {
         } catch (err) {
             this._showToast(err.message, 'error');
         }
+    }
+
+    _getActiveTableTarget(explicitTarget = null) {
+        if (explicitTarget?.table) return explicitTarget;
+        const cellTarget = this.editor.getTableCellTargetFromSelection?.();
+        if (cellTarget?.table) return cellTarget;
+        const active = this.editor.getActiveObject();
+        if (active?._elementType === 'table') {
+            return {
+                table: active,
+                row: active._activeCell?.row ?? 0,
+                col: active._activeCell?.col ?? 0,
+            };
+        }
+        return null;
+    }
+
+    _onTableAction(action, explicitTarget = null) {
+        const target = this._getActiveTableTarget(explicitTarget);
+        const table = target?.table || (action === 'importCsv' ? null : this.editor.getActiveObject());
+        const row = target?.row ?? 0;
+        const col = target?.col ?? 0;
+
+        let updated = null;
+        switch (action) {
+            case 'insertRowAbove':
+                if (!table) return;
+                updated = this.editor.insertTableRow(table, row, 'above');
+                break;
+            case 'insertRowBelow':
+                if (!table) return;
+                updated = this.editor.insertTableRow(table, row, 'below');
+                break;
+            case 'insertColLeft':
+                if (!table) return;
+                updated = this.editor.insertTableColumn(table, col, 'left');
+                break;
+            case 'insertColRight':
+                if (!table) return;
+                updated = this.editor.insertTableColumn(table, col, 'right');
+                break;
+            case 'deleteRow':
+                if (!table) return;
+                updated = this.editor.deleteTableRow(table, row);
+                break;
+            case 'deleteCol':
+                if (!table) return;
+                updated = this.editor.deleteTableColumn(table, col);
+                break;
+            case 'distributeEvenly':
+                if (!table || table._elementType !== 'table') return;
+                updated = this.editor.distributeTableSizesEvenly(table);
+                break;
+            case 'exportCsv':
+                if (!table || table._elementType !== 'table') return;
+                this._exportCanvasTableCsv(table);
+                return;
+            case 'importCsv':
+                if (this.els.tableCsvInput) this.els.tableCsvInput.click();
+                return;
+            default:
+                return;
+        }
+
+        if (!updated) {
+            this._showToast('Table action failed', 'error');
+            return;
+        }
+
+        this.toolbar.syncTablePropsFromObject(updated);
+        const activeCell = updated._activeCell;
+        if (activeCell) {
+            this.toolbar.syncTableCellOps({
+                table: updated,
+                row: activeCell.row,
+                col: activeCell.col,
+            });
+        }
+        this._markDirty();
+    }
+
+    _exportCanvasTableCsv(table) {
+        const csv = this.editor.exportTableCsv(table);
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+        this._downloadBlob(blob, 'table.csv');
+        this._showToast('Table exported', 'success');
+    }
+
+    async _onTableCsvFileSelected(e) {
+        const file = e.target.files?.[0];
+        e.target.value = '';
+        if (!file) return;
+
+        try {
+            const csvText = await file.text();
+            const table = this.editor.importTableFromCsv(csvText);
+            if (!table) {
+                this._showToast('Could not import CSV', 'error');
+                return;
+            }
+            this.toolbar._showTableProps(table);
+            this._onToolChange('select');
+            this._markDirty();
+            this._showToast('Table imported from CSV', 'success');
+        } catch (err) {
+            this._showToast(err.message || 'CSV import failed', 'error');
+        }
+    }
+
+    _syncDetectedTableSelect() {
+        const select = this.els.detectedTableSelect;
+        const actions = this.els.detectedTableActions;
+        if (!select || !actions) return;
+
+        const tables = this._detectedTables || [];
+        select.innerHTML = '';
+        tables.forEach((table, index) => {
+            const option = document.createElement('option');
+            option.value = String(index);
+            const rowCount = table.row_count || table.rows?.length || 0;
+            const colCount = table.col_count || table.rows?.[0]?.length || 0;
+            option.textContent = `Table ${index + 1} (${rowCount}×${colCount})`;
+            select.appendChild(option);
+        });
+        actions.style.display = tables.length > 0 ? 'block' : 'none';
+    }
+
+    _makeDetectedTableEditable() {
+        const tables = this._detectedTables || [];
+        if (!tables.length) {
+            this._showToast('No detected tables', 'error');
+            return;
+        }
+
+        const index = parseInt(this.els.detectedTableSelect?.value || '0', 10) || 0;
+        const detected = tables[index];
+        if (!detected) {
+            this._showToast('Table not found', 'error');
+            return;
+        }
+
+        const table = this.editor.addTableFromDetection(detected.bbox, detected.rows || []);
+        if (!table) {
+            this._showToast('Could not create table', 'error');
+            return;
+        }
+
+        if (this.editor._tableOverlays?.[index]) {
+            this.editor.canvas.remove(this.editor._tableOverlays[index]);
+            this.editor._tableOverlays.splice(index, 1);
+            this.editor.canvas.requestRenderAll();
+        }
+
+        this._detectedTables.splice(index, 1);
+        this._syncDetectedTableSelect();
+        if (this.els.tablesCountText) {
+            const count = this._detectedTables.length;
+            this.els.tablesCountText.textContent = `${count} table${count === 1 ? '' : 's'} detected`;
+            if (count === 0 && this.els.tablesOverlayInfo) {
+                this.els.tablesOverlayInfo.style.display = 'none';
+            }
+            if (this.els.btnExportTables) {
+                this.els.btnExportTables.style.display = count > 0 ? 'inline-flex' : 'none';
+            }
+        }
+
+        this.toolbar._showTableProps(table);
+        this._onToolChange('select');
+        this._markDirty();
+        this._showToast('Editable table created', 'success');
     }
 
     _showToast(message, type = 'success', durationMs = 3000) {

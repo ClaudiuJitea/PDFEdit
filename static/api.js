@@ -304,8 +304,9 @@ const API = {
         return resp.json();
     },
 
-    async exportPageTablesCsv(sessionId, pageNum) {
-        const resp = await fetch(`${this.baseUrl}/page/${sessionId}/${pageNum}/tables/export`);
+    async exportPageTablesCsv(sessionId, pageNum, tableIndex = null) {
+        const query = tableIndex != null ? `?index=${encodeURIComponent(tableIndex)}` : '';
+        const resp = await fetch(`${this.baseUrl}/page/${sessionId}/${pageNum}/tables/export${query}`);
         if (!resp.ok) throw new Error('Failed to export tables');
         return resp.blob();
     },
