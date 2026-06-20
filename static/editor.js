@@ -5019,8 +5019,8 @@ class PDFEditor {
 
     fitToView(containerWidth, containerHeight) {
         if (!this.canvas || !this.canvasWidth || !this.canvasHeight) return this.zoomLevel;
-        const scaleX = (containerWidth - 40) / this.canvasWidth;
-        const scaleY = (containerHeight - 40) / this.canvasHeight;
+        const scaleX = containerWidth / this.canvasWidth;
+        const scaleY = containerHeight / this.canvasHeight;
         const zoom = Math.min(scaleX, scaleY, 2);
         this.setZoom(zoom);
         return this.zoomLevel;

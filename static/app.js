@@ -1649,6 +1649,7 @@ class App {
             }
             this._updatePageInfo();
             this._fitToView();
+            this._resetCanvasScrollTop();
 
             this._showContextProperties();
 
@@ -1910,12 +1911,24 @@ class App {
     _fitToView() {
         if (!this.editor.canvas) return;
         const wrapper = this.els.canvasWrapper;
-        const w = wrapper.clientWidth;
-        const h = wrapper.clientHeight - 20;
+        const styles = window.getComputedStyle(wrapper);
+        const padX = parseFloat(styles.paddingLeft || '0') + parseFloat(styles.paddingRight || '0');
+        const padY = parseFloat(styles.paddingTop || '0') + parseFloat(styles.paddingBottom || '0');
+        const w = Math.max(0, wrapper.clientWidth - padX);
+        const h = Math.max(0, wrapper.clientHeight - padY);
         this.editor.fitToView(w, h);
         this.formLayer.setZoom(this.editor.zoomLevel);
         this.formLayer.syncPosition();
         this.els.zoomLevel.textContent = Math.round(this.editor.zoomLevel * 100) + '%';
+    }
+
+    _resetCanvasScrollTop() {
+        requestAnimationFrame(() => {
+            if (this.els.canvasWrapper) {
+                this.els.canvasWrapper.scrollTop = 0;
+            }
+            this.formLayer.syncPosition();
+        });
     }
 
     async _saveCurrentPage(options = {}) {

@@ -881,7 +881,8 @@ select {
     justify-content: flex-start;
     overflow: auto;
     position: relative;
-    padding: 20px;
+    padding: 24px;
+    scroll-padding: 24px;
 }
 
 .canvas-wrapper::before {
@@ -900,6 +901,7 @@ select {
     margin: 0 auto;
     position: relative;
     z-index: 1;
+    flex-shrink: 0;
 }
 
 .form-layer {
