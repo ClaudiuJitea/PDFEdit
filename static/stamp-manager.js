@@ -35,6 +35,9 @@ class StampManager {
             btnEditorDelete: document.getElementById('btn-stamp-editor-delete'),
             inputText: document.getElementById('stamp-editor-text'),
             inputShape: document.getElementById('stamp-editor-shape'),
+            inputFontFamily: document.getElementById('stamp-editor-font-family'),
+            inputFontWeight: document.getElementById('stamp-editor-font-weight'),
+            signGrid: document.getElementById('stamp-editor-sign-grid'),
             inputAccent: document.getElementById('stamp-editor-accent'),
             inputTextColor: document.getElementById('stamp-editor-text-color'),
             inputFillOpacity: document.getElementById('stamp-editor-fill-opacity'),
@@ -47,9 +50,50 @@ class StampManager {
             chkDashed: document.getElementById('stamp-editor-dashed'),
             chkDoubleBorder: document.getElementById('stamp-editor-double-border'),
             chkCross: document.getElementById('stamp-editor-cross'),
-            chkCheckmark: document.getElementById('stamp-editor-checkmark'),
             chkStrike: document.getElementById('stamp-editor-strike'),
         };
+
+        this._initFontOptions();
+        this._initSignGrid();
+    }
+
+    _initFontOptions() {
+        const select = this.els.inputFontFamily;
+        if (!select || !window.StampKit) return;
+        select.innerHTML = '';
+        StampKit.listFontOptions().forEach((option) => {
+            const el = document.createElement('option');
+            el.value = option.value;
+            el.textContent = option.label;
+            select.appendChild(el);
+        });
+    }
+
+    _initSignGrid() {
+        const grid = this.els.signGrid;
+        if (!grid || !window.StampKit) return;
+        grid.innerHTML = '';
+        StampKit.listSignOptions().forEach((option) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'stamp-sign-option';
+            btn.dataset.sign = option.id;
+            btn.title = option.label;
+            btn.setAttribute('aria-label', option.label);
+            btn.innerHTML = `<span class="stamp-sign-option-preview">${option.preview}</span><span class="stamp-sign-option-label">${option.label}</span>`;
+            btn.addEventListener('click', () => {
+                this._setSelectedSign(option.id);
+                this._updatePreview();
+            });
+            grid.appendChild(btn);
+        });
+    }
+
+    _setSelectedSign(signId) {
+        if (!this.els.signGrid) return;
+        this.els.signGrid.querySelectorAll('.stamp-sign-option').forEach((btn) => {
+            btn.classList.toggle('active', btn.dataset.sign === signId);
+        });
     }
 
     _bindModalActions() {
@@ -76,6 +120,8 @@ class StampManager {
         [
             this.els.inputText,
             this.els.inputShape,
+            this.els.inputFontFamily,
+            this.els.inputFontWeight,
             this.els.inputAccent,
             this.els.inputTextColor,
             this.els.inputFillOpacity,
@@ -95,7 +141,6 @@ class StampManager {
             this.els.chkDashed,
             this.els.chkDoubleBorder,
             this.els.chkCross,
-            this.els.chkCheckmark,
             this.els.chkStrike,
         ].forEach((el) => {
             el?.addEventListener('change', schedulePreview);
@@ -150,6 +195,13 @@ class StampManager {
     _populateEditor(cfg) {
         this.els.inputText.value = cfg.text || '';
         this.els.inputShape.value = cfg.shape || 'rounded';
+        if (this.els.inputFontFamily) {
+            this.els.inputFontFamily.value = StampKit.resolveFontFamily(cfg);
+        }
+        if (this.els.inputFontWeight) {
+            this.els.inputFontWeight.value = String(cfg.fontWeight || '700');
+        }
+        this._setSelectedSign(StampKit.resolveSign(cfg));
         this.els.inputAccent.value = cfg.stroke || cfg.fill || '#15803d';
         this.els.inputTextColor.value = cfg.textColor || cfg.stroke || '#14532d';
         this.els.inputFillOpacity.value = cfg.fillOpacity != null ? cfg.fillOpacity : 0.12;
@@ -162,8 +214,12 @@ class StampManager {
         this.els.chkDashed.checked = !!cfg.dashed;
         this.els.chkDoubleBorder.checked = !!(cfg.doubleBorder || cfg.shape === 'double');
         this.els.chkCross.checked = !!(cfg.cross || cfg.shape === 'cross');
-        this.els.chkCheckmark.checked = !!cfg.checkmark;
         this.els.chkStrike.checked = !!cfg.strike;
+    }
+
+    _getSelectedSign() {
+        const active = this.els.signGrid?.querySelector('.stamp-sign-option.active');
+        return active?.dataset.sign || 'none';
     }
 
     _readEditorConfig() {
@@ -173,6 +229,9 @@ class StampManager {
         const patch = {
             text: this.els.inputText.value,
             shape,
+            sign: this._getSelectedSign(),
+            fontFamily: this.els.inputFontFamily?.value || 'Helvetica, Arial, sans-serif',
+            fontWeight: this.els.inputFontWeight?.value || '700',
             strokeWidth: parseFloat(this.els.inputStrokeWidth.value) || 2,
             fillOpacity: parseFloat(this.els.inputFillOpacity.value) || 0.12,
             fontSize: parseFloat(this.els.inputFontSize.value) || 16,
@@ -183,7 +242,6 @@ class StampManager {
             dashed: this.els.chkDashed.checked,
             doubleBorder: this.els.chkDoubleBorder.checked || shape === 'double',
             cross: this.els.chkCross.checked || shape === 'cross',
-            checkmark: this.els.chkCheckmark.checked,
             strike: this.els.chkStrike.checked,
             textColor: this.els.inputTextColor.value,
         };
@@ -211,7 +269,8 @@ class StampManager {
             onOffsetChange: (updatedCfg) => {
                 if (this.editingConfig) {
                     this.editingConfig.textOffset = updatedCfg.textOffset;
-                    this.editingConfig.checkmarkOffset = updatedCfg.checkmarkOffset;
+                    this.editingConfig.signOffset = updatedCfg.signOffset || updatedCfg.checkmarkOffset;
+                    this.editingConfig.checkmarkOffset = updatedCfg.checkmarkOffset || updatedCfg.signOffset;
                 }
             }
         });

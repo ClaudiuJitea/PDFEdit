@@ -967,6 +967,19 @@
                             <div class="signature-empty-item">No initials saved</div>
                         </div>
                     </div>
+
+                    <div class="sig-gallery-section cert-sign-section">
+                        <div class="sig-gallery-header">
+                            <span class="sig-gallery-label">Digital Certificate</span>
+                        </div>
+                        <p class="cert-sign-hint">
+                            Sign the PDF with a PKCS#12 certificate (.p12 / .pfx), or generate a self-signed certificate in the app. The signature is embedded in the file and can be verified in PDF readers.
+                        </p>
+                        <button id="btn-cert-sign" class="secondary-btn cert-sign-btn" type="button">
+                            <i data-lucide="shield-check" class="btn-icon-sm"></i>
+                            Sign with Certificate
+                        </button>
+                    </div>
                 </div>
 
                 <div id="props-page" class="props-section" style="display:none">
@@ -1484,6 +1497,27 @@
                                     <option value="cross">Cross / void</option>
                                 </select>
                             </div>
+                            <div class="stamp-editor-font-row">
+                                <div class="prop-group">
+                                    <label class="prop-label" for="stamp-editor-font-family">Font</label>
+                                    <select id="stamp-editor-font-family" class="prop-select"></select>
+                                </div>
+                                <div class="prop-group">
+                                    <label class="prop-label" for="stamp-editor-font-weight">Weight</label>
+                                    <select id="stamp-editor-font-weight" class="prop-select">
+                                        <option value="300">Light</option>
+                                        <option value="400">Regular</option>
+                                        <option value="500">Medium</option>
+                                        <option value="600">Semi-bold</option>
+                                        <option value="700" selected>Bold</option>
+                                        <option value="800">Extra-bold</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="prop-group">
+                                <label class="prop-label">Sign / icon</label>
+                                <div id="stamp-editor-sign-grid" class="stamp-sign-grid" role="radiogroup" aria-label="Stamp sign"></div>
+                            </div>
                             <div class="stamp-editor-color-row">
                                 <div class="prop-group">
                                     <label class="prop-label" for="stamp-editor-accent">Ink color</label>
@@ -1528,7 +1562,6 @@
                                 <label class="prop-checkbox"><input type="checkbox" id="stamp-editor-dashed"> Dashed border</label>
                                 <label class="prop-checkbox"><input type="checkbox" id="stamp-editor-double-border"> Inner border</label>
                                 <label class="prop-checkbox"><input type="checkbox" id="stamp-editor-cross"> Cross overlay</label>
-                                <label class="prop-checkbox"><input type="checkbox" id="stamp-editor-checkmark"> Checkmark</label>
                                 <label class="prop-checkbox"><input type="checkbox" id="stamp-editor-strike"> Strikethrough text</label>
                             </div>
                         </div>
@@ -1622,6 +1655,154 @@
                 <div class="modal-actions" style="margin-top:20px;">
                     <button id="btn-cancel-sig" class="modal-btn cancel" type="button">Cancel</button>
                     <button id="btn-save-sig" class="modal-btn confirm" type="button">Create & Save</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Certificate Sign Modal -->
+        <div id="cert-sign-modal" class="modal" style="display:none">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content modal-content-wide cert-sign-modal-content">
+                <h2 class="modal-title">Sign with Certificate</h2>
+
+                <div class="cert-modal-tabs">
+                    <button class="cert-modal-tab active" type="button" data-cert-tab="sign">Use Certificate</button>
+                    <button class="cert-modal-tab" type="button" data-cert-tab="generate">Generate Certificate</button>
+                </div>
+
+                <div id="cert-tab-sign" class="cert-tab-panel">
+                    <p class="form-summary-selected">
+                        Upload a PKCS#12 file (.p12 or .pfx), then draw a rectangle on the page for the signature field.
+                    </p>
+
+                    <div class="cert-stamp-preview">
+                        <div class="cert-stamp-preview-card">
+                            <div class="cert-stamp-preview-topbar"></div>
+                            <div class="cert-stamp-preview-content">
+                                <div class="cert-stamp-preview-badge" aria-hidden="true">
+                                    <span>✓</span>
+                                </div>
+                                <div class="cert-stamp-preview-body">
+                                    <div class="cert-stamp-preview-title">DIGITALLY SIGNED</div>
+                                    <div class="cert-stamp-preview-name">Your Name</div>
+                                    <div class="cert-stamp-preview-email">email@example.com</div>
+                                    <div class="cert-stamp-preview-meta">Date: 2026-06-20 18:00:00</div>
+                                </div>
+                            </div>
+                        </div>
+                        <p class="form-summary-selected">Modern badge layout with balanced alignment and full-width accent bar.</p>
+                    </div>
+
+                    <div class="prop-group">
+                        <label class="prop-label">Certificate file</label>
+                        <div class="cert-file-row">
+                            <span id="cert-file-label" class="cert-file-label">No certificate selected</span>
+                            <button id="btn-browse-cert" class="secondary-btn btn-sm" type="button">Browse…</button>
+                            <input type="file" id="cert-file-input" accept=".p12,.pfx,application/x-pkcs12" hidden>
+                        </div>
+                    </div>
+
+                    <div class="prop-group">
+                        <label class="prop-label" for="cert-password">Certificate password</label>
+                        <input type="password" id="cert-password" class="prop-input" autocomplete="off" placeholder="Leave blank if none">
+                    </div>
+
+                    <div class="prop-row">
+                        <div class="prop-group flex-1">
+                            <label class="prop-label" for="cert-reason">Reason (optional)</label>
+                            <input type="text" id="cert-reason" class="prop-input" placeholder="e.g. I approve this document">
+                        </div>
+                        <div class="prop-group flex-1">
+                            <label class="prop-label" for="cert-location">Location (optional)</label>
+                            <input type="text" id="cert-location" class="prop-input" placeholder="e.g. New York, NY">
+                        </div>
+                    </div>
+
+                    <div class="prop-group">
+                        <label class="prop-label" for="cert-contact-info">Contact info (optional)</label>
+                        <input type="email" id="cert-contact-info" class="prop-input" placeholder="email@example.com">
+                    </div>
+
+                    <details class="cert-advanced-details">
+                        <summary>Advanced appearance override</summary>
+                        <div class="prop-group">
+                            <label class="prop-label" for="cert-appearance-text">Custom stamp text</label>
+                            <textarea id="cert-appearance-text" class="prop-input cert-appearance-input" rows="4" placeholder="Leave blank for the modern default layout. Use %(signer)s and %(ts)s."></textarea>
+                        </div>
+                    </details>
+
+                    <div class="modal-actions">
+                        <button id="btn-cancel-cert-sign" class="modal-btn cancel" type="button">Cancel</button>
+                        <button id="btn-place-cert-sign" class="modal-btn confirm" type="button">Place Signature Field</button>
+                    </div>
+                </div>
+
+                <div id="cert-tab-generate" class="cert-tab-panel" style="display:none">
+                    <p class="form-summary-selected">
+                        Create a self-signed PKCS#12 certificate on the server (same as OpenSSL req + pkcs12 -export). You can download it and reuse it later.
+                    </p>
+
+                    <div class="prop-group">
+                        <label class="prop-label" for="gen-cn">Common Name (CN) *</label>
+                        <input type="text" id="gen-cn" class="prop-input" placeholder="Your full name">
+                    </div>
+
+                    <div class="prop-row">
+                        <div class="prop-group flex-1">
+                            <label class="prop-label" for="gen-email">Email</label>
+                            <input type="email" id="gen-email" class="prop-input" placeholder="email@example.com">
+                        </div>
+                        <div class="prop-group flex-1">
+                            <label class="prop-label" for="gen-country">Country (2-letter)</label>
+                            <input type="text" id="gen-country" class="prop-input" maxlength="2" placeholder="US">
+                        </div>
+                    </div>
+
+                    <div class="prop-row">
+                        <div class="prop-group flex-1">
+                            <label class="prop-label" for="gen-organization">Organization</label>
+                            <input type="text" id="gen-organization" class="prop-input" placeholder="Company name">
+                        </div>
+                        <div class="prop-group flex-1">
+                            <label class="prop-label" for="gen-ou">Organizational Unit</label>
+                            <input type="text" id="gen-ou" class="prop-input" placeholder="Department">
+                        </div>
+                    </div>
+
+                    <div class="prop-row">
+                        <div class="prop-group flex-1">
+                            <label class="prop-label" for="gen-state">State / Province</label>
+                            <input type="text" id="gen-state" class="prop-input" placeholder="California">
+                        </div>
+                        <div class="prop-group flex-1">
+                            <label class="prop-label" for="gen-locality">Locality / City</label>
+                            <input type="text" id="gen-locality" class="prop-input" placeholder="San Francisco">
+                        </div>
+                    </div>
+
+                    <div class="prop-row">
+                        <div class="prop-group flex-1">
+                            <label class="prop-label" for="gen-days">Valid for (days)</label>
+                            <input type="number" id="gen-days" class="prop-input" min="1" max="3650" value="365">
+                        </div>
+                        <div class="prop-group flex-1">
+                            <label class="prop-label" for="gen-key-bits">Key size (RSA)</label>
+                            <select id="gen-key-bits" class="prop-select">
+                                <option value="2048">2048 bit</option>
+                                <option value="4096" selected>4096 bit</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="prop-group">
+                        <label class="prop-label" for="gen-export-password">Export password for .p12 *</label>
+                        <input type="password" id="gen-export-password" class="prop-input" autocomplete="new-password" placeholder="Password to protect the .p12 file">
+                    </div>
+
+                    <div class="modal-actions">
+                        <button id="btn-cancel-cert-generate" class="modal-btn cancel" type="button">Cancel</button>
+                        <button id="btn-generate-cert" class="modal-btn confirm" type="button">Generate &amp; Use Certificate</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1845,15 +2026,16 @@
         });
     })();
     </script>
-    <script src="{{ url_for('static', filename='api.js') }}?v=1.0.11"></script>
-    <script src="{{ url_for('static', filename='stamps.js') }}?v=2.1.0"></script>
-    <script src="{{ url_for('static', filename='stamp-manager.js') }}?v=1.0.0"></script>
+    <script src="{{ url_for('static', filename='api.js') }}?v=1.0.13"></script>
+    <script src="{{ url_for('static', filename='stamps.js') }}?v=2.2.0"></script>
+    <script src="{{ url_for('static', filename='stamp-manager.js') }}?v=1.1.0"></script>
     <script src="{{ url_for('static', filename='editor.js') }}?v=1.0.22"></script>
     <script src="{{ url_for('static', filename='forms.js') }}?v=1.0.5"></script>
     <script src="{{ url_for('static', filename='toolbar.js') }}?v=1.0.10"></script>
     <script src="{{ url_for('static', filename='signature.js') }}?v=1.0.5"></script>
+    <script src="{{ url_for('static', filename='cert-signature.js') }}?v=1.1.0"></script>
     <script src="{{ url_for('static', filename='ai-settings.js') }}?v=1.0.0"></script>
     <script src="{{ url_for('static', filename='ai-assistant.js') }}?v=1.0.0"></script>
-    <script src="{{ url_for('static', filename='app.js') }}?v=1.0.18"></script>
+    <script src="{{ url_for('static', filename='app.js') }}?v=1.0.19"></script>
 </body>
 </html>

@@ -1,6 +1,8 @@
 import base64
 import csv
 import io
+import json
+import math
 import os
 import sys
 import uuid
@@ -15,6 +17,8 @@ import session_storage as store
 import ai_settings
 import ai_service
 from ai_service import AIServiceError
+from cert_sign import CertificateSignError, sign_pdf_bytes_with_pkcs12
+from cert_generate import CertificateGenerateError, generate_self_signed_pkcs12
 
 app = Flask(__name__)
 CORS(app)
@@ -146,6 +150,123 @@ def stamp_config_for_key(stamp_key, stamp_text=None):
     return base
 
 
+def stamp_sign_column(rect):
+    w = rect.width
+    h = rect.height
+    x0, y0 = rect.x0, rect.y0
+    col_left = w * 0.07
+    col_right = w * 0.36
+    cx = x0 + (col_left + col_right) / 2.0
+    cy = y0 + h / 2.0
+    span = min(col_right - col_left, h * 0.52)
+    return cx, cy, span
+
+
+def stamp_resolve_sign(config):
+    sign = (config or {}).get("sign")
+    if sign:
+        return str(sign).lower()
+    if (config or {}).get("checkmark"):
+        return "check"
+    return "none"
+
+
+def stamp_sign_offset(config):
+    offset = (config or {}).get("signOffset") or (config or {}).get("checkmarkOffset") or {}
+    try:
+        return float(offset.get("x") or 0), float(offset.get("y") or 0)
+    except (TypeError, ValueError):
+        return 0.0, 0.0
+
+
+def draw_stamp_sign(page, rect, config, stroke, stroke_w):
+    sign = stamp_resolve_sign(config)
+    if sign in ("", "none"):
+        return
+
+    cx, cy, span = stamp_sign_column(rect)
+    offset_x, offset_y = stamp_sign_offset(config)
+    cx += offset_x
+    cy += offset_y
+    pad = span * 0.34
+    width = max(1.5, stroke_w * 0.95)
+
+    shape = page.new_shape()
+
+    if sign == "check":
+        points = stamp_checkmark_points(rect)
+        if offset_x or offset_y:
+            points = [fitz.Point(p.x + offset_x, p.y + offset_y) for p in points]
+        shape.draw_polyline(points)
+    elif sign == "x":
+        shape.draw_line(fitz.Point(cx - pad, cy - pad), fitz.Point(cx + pad, cy + pad))
+        shape.draw_line(fitz.Point(cx + pad, cy - pad), fitz.Point(cx - pad, cy + pad))
+    elif sign == "star":
+        points = []
+        for i in range(10):
+            angle = (-math.pi / 2.0) + (i * math.pi / 5.0)
+            radius = pad * 1.05 if i % 2 == 0 else pad * 0.44
+            points.append(fitz.Point(cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
+        points.append(points[0])
+        shape.draw_polyline(points)
+    elif sign == "exclamation":
+        shape.draw_line(
+            fitz.Point(cx, cy - pad * 0.95),
+            fitz.Point(cx, cy + pad * 0.15),
+        )
+        shape.finish(color=stroke, width=width, lineCap=1, lineJoin=1)
+        page.draw_circle(fitz.Point(cx, cy + pad * 0.72), max(1.5, span * 0.08), color=stroke, fill=stroke)
+        return
+    elif sign == "arrow":
+        shape.draw_line(fitz.Point(cx - pad * 0.85, cy), fitz.Point(cx + pad * 0.45, cy))
+        shape.draw_line(fitz.Point(cx + pad * 0.05, cy - pad * 0.55), fitz.Point(cx + pad * 0.75, cy))
+        shape.draw_line(fitz.Point(cx + pad * 0.75, cy), fitz.Point(cx + pad * 0.05, cy + pad * 0.55))
+    elif sign == "info":
+        shape.draw_circle(fitz.Point(cx, cy), pad * 0.95)
+        shape.finish(color=stroke, width=max(1.0, width * 0.85))
+        shape = page.new_shape()
+        shape.draw_line(fitz.Point(cx, cy - pad * 0.35), fitz.Point(cx, cy + pad * 0.2))
+        shape.finish(color=stroke, width=max(1.0, width * 0.8), lineCap=1, lineJoin=1)
+        page.draw_circle(fitz.Point(cx, cy + pad * 0.58), max(1.5, span * 0.07), color=stroke, fill=stroke)
+        return
+    elif sign == "shield":
+        top = cy - pad * 0.95
+        bottom = cy + pad * 0.95
+        points = [
+            fitz.Point(cx, top),
+            fitz.Point(cx + pad * 0.95, top + pad * 0.45),
+            fitz.Point(cx + pad * 0.75, bottom),
+            fitz.Point(cx, bottom - pad * 0.15),
+            fitz.Point(cx - pad * 0.75, bottom),
+            fitz.Point(cx - pad * 0.95, top + pad * 0.45),
+        ]
+        shape.draw_polyline(points + [points[0]])
+    elif sign == "minus":
+        shape.draw_line(fitz.Point(cx - pad * 0.85, cy), fitz.Point(cx + pad * 0.85, cy))
+    else:
+        return
+
+    shape.finish(color=stroke, width=width, lineCap=1, lineJoin=1)
+
+
+def stamp_text_offset(config):
+    offset = (config or {}).get("textOffset") or {}
+    try:
+        return float(offset.get("x") or 0), float(offset.get("y") or 0)
+    except (TypeError, ValueError):
+        return 0.0, 0.0
+
+
+def stamp_pdf_font_family(config):
+    raw = (config or {}).get("fontFamily") or "Helvetica"
+    return str(raw).split(",")[0].strip().strip('"').strip("'") or "Helvetica"
+    try:
+        weight = int(float(font_weight))
+        return weight >= 600
+    except (TypeError, ValueError):
+        return str(font_weight or "").lower() in ("bold", "bolder", "600", "700", "800", "900")
+
+
 def stamp_checkmark_points(rect):
     """Bold two-stroke approval check in the stamp's left column."""
     w = rect.width
@@ -253,40 +374,38 @@ def draw_stamp_from_config(page, rect, config):
         cross_shape.finish(color=stroke, width=stroke_w * 0.9)
         commit_shape(cross_shape)
 
-    if config.get("checkmark"):
-        check = page.new_shape()
-        check.draw_polyline(stamp_checkmark_points(target))
-        check.finish(
-            color=stroke,
-            width=max(2.2, target.height * 0.075),
-            lineCap=1,
-            lineJoin=1,
-        )
-        commit_shape(check)
+    draw_stamp_sign(page, target, config, stroke, stroke_w)
 
-    if config.get("checkmark"):
+    has_sign = stamp_resolve_sign(config) not in ("", "none")
+    text_offset_x, text_offset_y = stamp_text_offset(config)
+
+    if has_sign:
         text_rect = fitz.Rect(
-            target.x0 + target.width * 0.40,
-            target.y0 + target.height * 0.2,
-            target.x1 - target.width * 0.05,
-            target.y1 - target.height * 0.2,
+            target.x0 + target.width * 0.40 + text_offset_x,
+            target.y0 + target.height * 0.2 + text_offset_y,
+            target.x1 - target.width * 0.05 + text_offset_x,
+            target.y1 - target.height * 0.2 + text_offset_y,
         )
-        fontsize = max(9, min(17, target.height * 0.36))
+        fontsize = float(config.get("fontSize") or 0) or max(9, min(17, target.height * 0.36))
     else:
         pad_x = target.width * 0.08
         pad_y = target.height * 0.18
         text_rect = fitz.Rect(
-            target.x0 + pad_x,
-            target.y0 + pad_y,
-            target.x1 - pad_x,
-            target.y1 - pad_y,
+            target.x0 + pad_x + text_offset_x,
+            target.y0 + pad_y + text_offset_y,
+            target.x1 - pad_x + text_offset_x,
+            target.y1 - pad_y + text_offset_y,
         )
-        fontsize = max(9, min(22, target.height * 0.38))
+        fontsize = float(config.get("fontSize") or 0) or max(9, min(22, target.height * 0.38))
+
+    font_family = stamp_pdf_font_family(config)
+    font_weight = config.get("fontWeight") or "bold"
+    fontname = pdf_font_name(font_family, bold=stamp_font_is_bold(font_weight))
 
     page.insert_textbox(
         text_rect,
         text,
-        fontname="hebo",
+        fontname=fontname,
         fontsize=fontsize,
         color=text_color,
         align=fitz.TEXT_ALIGN_CENTER,
@@ -2462,6 +2581,30 @@ def insert_page_link(page, doc, pdf_coords, link_kind, uri=None, target_page=Non
         })
 
 
+def _parse_form_bbox(raw):
+    if raw is None:
+        return None
+    if isinstance(raw, (list, tuple)) and len(raw) == 4:
+        return [float(v) for v in raw]
+    text = str(raw).strip()
+    if not text:
+        return None
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list) and len(parsed) == 4:
+                return [float(v) for v in parsed]
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+    parts = [part.strip() for part in text.split(",")]
+    if len(parts) == 4:
+        try:
+            return [float(v) for v in parts]
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def link_rect_from_body(page, body):
     canvas_bbox = body.get("bbox")
     pdf_bbox = body.get("pdf_bbox")
@@ -2533,6 +2676,37 @@ def _reopen_session_doc(path, entry):
         doc.authenticate(password)
     entry["doc"] = doc
     return doc
+
+
+def replace_session_document(session_id, pdf_bytes):
+    """Replace the in-memory session PDF with new bytes (e.g. after cert signing)."""
+    entry = get_session(session_id)
+    if not entry:
+        raise ValueError("Session not found")
+
+    path = _session_doc_path(session_id, entry)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = f"{path}.cert-sign.tmp"
+
+    try:
+        with open(tmp_path, "wb") as handle:
+            handle.write(pdf_bytes)
+        try:
+            if entry.get("doc") and not entry["doc"].is_closed:
+                entry["doc"].close()
+        except Exception:
+            pass
+        os.replace(tmp_path, path)
+        doc = _reopen_session_doc(path, entry)
+        entry["doc_path"] = path
+        store.write_meta(session_id, {"page_count": len(doc)})
+        return doc
+    finally:
+        if os.path.isfile(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 def save_session_doc(session_id):
@@ -3643,6 +3817,109 @@ def save_page(session_id, page_num):
     if saved_path:
         payload["saved_path"] = saved_path
     return jsonify(payload)
+
+
+@app.route("/api/cert/generate", methods=["POST"])
+def generate_certificate():
+    body = request.get_json(silent=True) or {}
+    try:
+        p12_bytes, filename, subject = generate_self_signed_pkcs12(
+            common_name=body.get("common_name"),
+            email=body.get("email"),
+            organization=body.get("organization"),
+            organizational_unit=body.get("organizational_unit"),
+            country=body.get("country"),
+            state=body.get("state"),
+            locality=body.get("locality"),
+            days=body.get("days", 365),
+            key_bits=body.get("key_bits", 4096),
+            export_password=body.get("export_password") or "",
+        )
+    except CertificateGenerateError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        print(f"Certificate generate error: {exc}", file=sys.stderr, flush=True)
+        return jsonify({"error": "Certificate generation failed"}), 500
+
+    return jsonify({
+        "success": True,
+        "filename": filename,
+        "subject": subject,
+        "certificate_base64": base64.b64encode(p12_bytes).decode("ascii"),
+    })
+
+
+@app.route("/api/session/<session_id>/cert-sign", methods=["POST"])
+def cert_sign_session(session_id):
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    cert_file = request.files.get("certificate")
+    if not cert_file or not cert_file.filename:
+        return jsonify({"error": "Certificate file is required (.p12 or .pfx)"}), 400
+
+    filename = cert_file.filename.lower()
+    if not filename.endswith((".p12", ".pfx")):
+        return jsonify({"error": "Certificate must be a .p12 or .pfx file"}), 400
+
+    try:
+        page_num = int(request.form.get("page_num", "0"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid page number"}), 400
+
+    doc = entry["doc"]
+    if page_num < 0 or page_num >= len(doc):
+        return jsonify({"error": "Page out of range"}), 400
+
+    page = doc[page_num]
+    pdf_bbox = link_rect_from_body(page, {
+        "pdf_bbox": _parse_form_bbox(request.form.get("pdf_bbox")),
+        "bbox": _parse_form_bbox(request.form.get("bbox")),
+    })
+    if not pdf_bbox:
+        return jsonify({"error": "Signature placement area is required"}), 400
+
+    password = request.form.get("password") or ""
+    reason = (request.form.get("reason") or "").strip()
+    location = (request.form.get("location") or "").strip()
+    contact_info = (request.form.get("contact_info") or "").strip()
+    appearance_text = (request.form.get("appearance_text") or "").strip() or None
+
+    try:
+        cert_bytes = cert_file.read()
+        buf = io.BytesIO()
+        doc.save(buf, garbage=0, deflate=False)
+        pdf_bytes = buf.getvalue()
+
+        signed_bytes = sign_pdf_bytes_with_pkcs12(
+            pdf_bytes,
+            cert_bytes,
+            password,
+            page_num,
+            pdf_bbox,
+            reason=reason,
+            location=location,
+            contact_info=contact_info,
+            appearance_text=appearance_text,
+        )
+        replace_session_document(session_id, signed_bytes)
+    except CertificateSignError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        print(f"Certificate sign error: {exc}", file=sys.stderr, flush=True)
+        return jsonify({"error": "Certificate signing failed"}), 500
+
+    entry = get_session(session_id)
+    page = entry["doc"][page_num]
+    thumbnail = render_page_thumbnail(page)
+    return jsonify({
+        "success": True,
+        "page_num": page_num,
+        "page_count": len(entry["doc"]),
+        "thumbnail": f"data:image/png;base64,{thumbnail}",
+        "message": "Document signed with certificate",
+    })
 
 
 @app.route("/api/export/<session_id>", methods=["POST"])

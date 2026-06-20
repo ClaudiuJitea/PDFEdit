@@ -1975,6 +1975,68 @@ select {
     margin-bottom: 8px;
 }
 
+.stamp-editor-font-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+.stamp-sign-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.stamp-sign-option {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    min-height: 58px;
+    padding: 8px 6px;
+    border: 1.5px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-2);
+    color: var(--color-text);
+    cursor: pointer;
+    transition:
+        border-color 0.15s ease,
+        background 0.15s ease,
+        box-shadow 0.15s ease;
+}
+
+.stamp-sign-option:hover {
+    border-color: color-mix(in srgb, var(--color-primary) 45%, var(--color-border));
+}
+
+.stamp-sign-option.active {
+    border-color: var(--color-primary);
+    background: color-mix(in srgb, var(--color-primary) 8%, var(--color-surface-2));
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 18%, transparent);
+}
+
+.stamp-sign-option-preview {
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.stamp-sign-option-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-text-muted);
+}
+
+.stamp-preset-btn-sign {
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
 .stamp-editor-form {
     max-height: 380px;
     overflow-y: auto;
@@ -3769,6 +3831,180 @@ select {
 
 .sig-add-link-btn:hover {
     background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+}
+
+.cert-sign-section {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--color-border);
+}
+
+.cert-sign-hint {
+    font-size: 12px;
+    color: var(--color-text-muted);
+    line-height: 1.45;
+    margin: 0 0 10px;
+}
+
+.cert-sign-btn {
+    width: 100%;
+    justify-content: center;
+}
+
+.cert-file-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.cert-file-label {
+    flex: 1;
+    font-size: 13px;
+    color: var(--color-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.cert-appearance-input {
+    min-height: 72px;
+    resize: vertical;
+    font-family: inherit;
+}
+
+.cert-sign-modal-content {
+    max-width: 640px;
+}
+
+.cert-modal-tabs {
+    display: flex;
+    gap: 8px;
+    margin: 0 0 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--color-border);
+}
+
+.cert-modal-tab {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-text-muted);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.cert-modal-tab.active {
+    background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+    border-color: color-mix(in srgb, var(--color-primary) 35%, var(--color-border));
+    color: var(--color-primary);
+}
+
+.cert-tab-panel {
+    display: block;
+}
+
+.cert-stamp-preview {
+    margin-bottom: 16px;
+}
+
+.cert-stamp-preview-card {
+    display: flex;
+    flex-direction: column;
+    min-height: 110px;
+    border: 1px solid #b8c4d0;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #f6f8fb;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+.cert-stamp-preview-topbar {
+    height: 5px;
+    flex-shrink: 0;
+    background: #0d9488;
+}
+
+.cert-stamp-preview-content {
+    flex: 1;
+    display: flex;
+    align-items: stretch;
+}
+
+.cert-stamp-preview-badge {
+    width: 76px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #ecfdf5;
+    border-right: 1px solid #d5dde7;
+}
+
+.cert-stamp-preview-badge span {
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: #0d9488;
+    color: #fff;
+    font-size: 20px;
+    font-weight: 800;
+    line-height: 1;
+}
+
+.cert-stamp-preview-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 12px 16px;
+    font-family: Helvetica, Arial, sans-serif;
+}
+
+.cert-stamp-preview-title {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: #0d9488;
+    margin-bottom: 8px;
+}
+
+.cert-stamp-preview-name {
+    font-size: 12px;
+    font-weight: 700;
+    color: #111827;
+    margin-bottom: 3px;
+}
+
+.cert-stamp-preview-email {
+    font-size: 10px;
+    color: #6b7280;
+    margin-bottom: 8px;
+}
+
+.cert-stamp-preview-meta {
+    font-size: 10px;
+    color: #6b7280;
+}
+
+.cert-advanced-details {
+    margin: 8px 0 16px;
+    font-size: 13px;
+    color: var(--color-text-muted);
+}
+
+.cert-advanced-details summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--color-primary);
+    margin-bottom: 8px;
 }
 
 .signature-list-gallery {

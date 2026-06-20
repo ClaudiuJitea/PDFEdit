@@ -68,6 +68,8 @@ class App {
         this.linkScope = 'page';
         this.linkPreset = 'web';
         this._linkDrawAreaMode = false;
+        this._certSignPlacementMode = false;
+        this._certSignPending = null;
         this.isDirty = false;
         this.dirtyPages = new Set();
         this._draftPersistTimer = null;
@@ -2157,6 +2159,7 @@ class App {
         if (this.toolbar.activeTool === 'link' && tool !== 'link') {
             this.editor.clearLinkOverlays();
             this._linkDrawAreaMode = false;
+            this._cancelCertSignPlacement(false);
         }
 
         if (tool === 'stamp') {
@@ -3848,10 +3851,92 @@ class App {
 
     async _onLinkAreaDrawn(area) {
         if (!this.sessionId) return;
+        if (this._certSignPlacementMode && this._certSignPending) {
+            try {
+                await this._executeCertSign(area);
+            } catch (err) {
+                this._showToast(err.message, 'error');
+            }
+            return;
+        }
         try {
             await this._createLinkFromArea(area);
         } catch (err) {
             this._showToast(err.message, 'error');
+        }
+    }
+
+    startCertSignPlacement(pending) {
+        if (!this.sessionId || !pending?.certificateFile) return;
+        this._certSignPending = pending;
+        this._certSignPlacementMode = true;
+        this.toolbar.setActiveTool('link');
+        this.editor.setTool('link');
+        this._linkDrawAreaMode = true;
+        this.editor.setLinkDrawMode(true);
+        this.toolbar.showLinkProperties?.();
+        this._showToast('Draw a rectangle where the digital signature should appear', 'info');
+    }
+
+    _cancelCertSignPlacement(showToast = true) {
+        if (!this._certSignPlacementMode) return;
+        this._certSignPlacementMode = false;
+        this._certSignPending = null;
+        this._linkDrawAreaMode = false;
+        this.editor.setLinkDrawMode(false);
+        if (showToast) {
+            this._showToast('Certificate signing cancelled', 'info');
+        }
+    }
+
+    async _executeCertSign(area) {
+        const pending = this._certSignPending;
+        if (!this.sessionId || !pending) return;
+
+        this._linkDrawAreaMode = false;
+        this.editor.setLinkDrawMode(false);
+
+        this._showToast('Signing document with certificate…', 'info');
+
+        const pageNum = this.currentPage;
+        try {
+            const result = await API.certSign(this.sessionId, {
+                ...pending,
+                pageNum,
+                pdf_bbox: area.pdf_bbox,
+                bbox: area.bbox,
+            });
+
+            this._certSignPlacementMode = false;
+            this._certSignPending = null;
+
+            this.pageStates = {};
+            this.pageFormStates = {};
+            this.dirtyPages = new Set();
+            this.isDirty = false;
+            this._updateSaveUnsavedIndicator();
+
+            if (result.page_count != null) {
+                this.pageCount = result.page_count;
+                this._updatePageInfo();
+            }
+
+            if (result.thumbnail) {
+                this.thumbnails[pageNum] = result.thumbnail;
+                this._updateThumbnail(pageNum);
+            }
+
+            await this._loadPage(pageNum);
+            this.isDirty = true;
+            this.dirtyPages.add(pageNum);
+            this._updateSaveUnsavedIndicator();
+            this._onToolChange('signature');
+            this._showToast(result.message || 'Document signed with certificate', 'success');
+        } catch (err) {
+            this._certSignPlacementMode = true;
+            this._linkDrawAreaMode = true;
+            this.editor.setLinkDrawMode(true);
+            throw err;
         }
     }
 

@@ -13,14 +13,40 @@
  * @property {boolean} doubleBorder
  * @property {boolean} cross
  * @property {boolean} checkmark
+ * @property {'none'|'check'|'x'|'star'|'exclamation'|'arrow'|'info'|'shield'|'minus'} [sign]
  * @property {boolean} strike
  * @property {number} fontSize
+ * @property {string} fontFamily
  * @property {string} fontWeight
  * @property {number} charSpacing
  * @property {number} width
  * @property {number} height
  * @property {number} defaultRotation
  */
+
+const STAMP_FONT_OPTIONS = [
+    { value: 'Helvetica, Arial, sans-serif', label: 'Helvetica / Arial' },
+    { value: 'Times New Roman, Times, serif', label: 'Times New Roman' },
+    { value: 'Courier New, Courier, monospace', label: 'Courier New' },
+    { value: 'Georgia, serif', label: 'Georgia' },
+    { value: 'Verdana, sans-serif', label: 'Verdana' },
+    { value: 'Trebuchet MS, sans-serif', label: 'Trebuchet MS' },
+    { value: 'Palatino, Palatino Linotype, serif', label: 'Palatino' },
+    { value: 'Garamond, serif', label: 'Garamond' },
+    { value: 'Comic Sans MS, cursive', label: 'Comic Sans MS' },
+];
+
+const STAMP_SIGN_OPTIONS = [
+    { id: 'none', label: 'None', preview: '—' },
+    { id: 'check', label: 'Check', preview: '✓' },
+    { id: 'x', label: 'Cross', preview: '✕' },
+    { id: 'star', label: 'Star', preview: '★' },
+    { id: 'exclamation', label: 'Alert', preview: '!' },
+    { id: 'arrow', label: 'Arrow', preview: '→' },
+    { id: 'info', label: 'Info', preview: 'i' },
+    { id: 'shield', label: 'Shield', preview: '⛨' },
+    { id: 'minus', label: 'Minus', preview: '−' },
+];
 
 const STAMP_PRESET_KEYS = [
     'approved', 'draft', 'confidential', 'void',
@@ -43,6 +69,7 @@ const STAMP_PRESET_LIBRARY = {
         checkmark: true,
         strike: false,
         fontSize: 16,
+        fontFamily: 'Helvetica, Arial, sans-serif',
         fontWeight: 'bold',
         charSpacing: 70,
         width: 172,
@@ -127,6 +154,7 @@ const STAMP_PRESET_LIBRARY = {
         checkmark: false,
         strike: false,
         fontSize: 16,
+        fontFamily: 'Helvetica, Arial, sans-serif',
         fontWeight: 'bold',
         charSpacing: 40,
         width: 168,
@@ -321,11 +349,47 @@ const StampKit = {
         return JSON.parse(JSON.stringify(config || STAMP_PRESET_LIBRARY.approved));
     },
 
+    listFontOptions() {
+        return STAMP_FONT_OPTIONS.slice();
+    },
+
+    listSignOptions() {
+        return STAMP_SIGN_OPTIONS.slice();
+    },
+
+    resolveSign(config) {
+        const cfg = config || {};
+        if (cfg.sign && STAMP_SIGN_OPTIONS.some((item) => item.id === cfg.sign)) {
+            return cfg.sign;
+        }
+        if (cfg.checkmark) return 'check';
+        return 'none';
+    },
+
+    hasSign(config) {
+        return this.resolveSign(config) !== 'none';
+    },
+
+    resolveFontFamily(config) {
+        return config?.fontFamily || 'Helvetica, Arial, sans-serif';
+    },
+
     mergeConfig(base, patch) {
         const next = this.cloneConfig(base);
-        if (!patch) return next;
+        if (!patch) return this.normalizeConfig(next);
         Object.assign(next, patch);
         if (patch.text != null) next.text = String(patch.text).toUpperCase().slice(0, 48) || 'STAMP';
+        return this.normalizeConfig(next);
+    },
+
+    normalizeConfig(config) {
+        const next = config || {};
+        next.sign = this.resolveSign(next);
+        next.checkmark = next.sign === 'check';
+        if (!next.fontFamily) next.fontFamily = 'Helvetica, Arial, sans-serif';
+        if (!next.signOffset && next.checkmarkOffset) {
+            next.signOffset = { ...next.checkmarkOffset };
+        }
         return next;
     },
 
@@ -362,14 +426,22 @@ const StampKit = {
     },
 
     /**
-     * Bold two-stroke approval check, centered in the left column of the stamp.
+     * Left icon column used by stamp signs.
      */
-    checkmarkGeometry(w, h) {
+    signColumn(w, h) {
         const colLeft = w * 0.07;
         const colRight = w * 0.36;
         const cx = (colLeft + colRight) / 2;
         const cy = h / 2;
         const span = Math.min(colRight - colLeft, h * 0.52);
+        return { colLeft, colRight, cx, cy, span };
+    },
+
+    /**
+     * Bold two-stroke approval check, centered in the left column of the stamp.
+     */
+    checkmarkGeometry(w, h) {
+        const { cx, cy, span } = this.signColumn(w, h);
         const x0 = cx - span * 0.38;
         const y0 = cy + span * 0.12;
         const x1 = cx - span * 0.08;
@@ -382,6 +454,147 @@ const StampKit = {
             points: [[x0, y0], [x1, y1], [x2, y2]],
             strokeWidth: Math.max(2.5, h * 0.075),
         };
+    },
+
+    signGeometry(w, h, signType) {
+        const sign = signType || 'none';
+        const { cx, cy, span } = this.signColumn(w, h);
+        const strokeWidth = Math.max(2.5, h * 0.075);
+        const pad = span * 0.34;
+
+        switch (sign) {
+            case 'check':
+                return { kind: 'path', ...this.checkmarkGeometry(w, h) };
+            case 'x': {
+                const path = `M ${cx - pad} ${cy - pad} L ${cx + pad} ${cy + pad} M ${cx + pad} ${cy - pad} L ${cx - pad} ${cy + pad}`;
+                return { kind: 'path', path, strokeWidth };
+            }
+            case 'star': {
+                const outer = pad * 1.05;
+                const inner = outer * 0.42;
+                const points = [];
+                for (let i = 0; i < 10; i += 1) {
+                    const angle = (-Math.PI / 2) + (i * Math.PI / 5);
+                    const radius = i % 2 === 0 ? outer : inner;
+                    points.push([cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius]);
+                }
+                const path = `M ${points.map(([x, y]) => `${x} ${y}`).join(' L ')} Z`;
+                return { kind: 'path', path, strokeWidth: strokeWidth * 0.85, fill: true };
+            }
+            case 'exclamation':
+                return {
+                    kind: 'parts',
+                    parts: [
+                        { kind: 'line', x1: cx, y1: cy - pad * 0.95, x2: cx, y2: cy + pad * 0.15, strokeWidth },
+                        { kind: 'circle', cx, cy: cy + pad * 0.72, r: Math.max(2, span * 0.08), fill: true },
+                    ],
+                };
+            case 'arrow': {
+                const path = `M ${cx - pad * 0.85} ${cy} L ${cx + pad * 0.45} ${cy} M ${cx + pad * 0.05} ${cy - pad * 0.55} L ${cx + pad * 0.75} ${cy} L ${cx + pad * 0.05} ${cy + pad * 0.55}`;
+                return { kind: 'path', path, strokeWidth };
+            }
+            case 'info':
+                return {
+                    kind: 'parts',
+                    parts: [
+                        { kind: 'circle', cx, cy, r: pad * 0.95, strokeWidth: strokeWidth * 0.9 },
+                        { kind: 'line', x1: cx, y1: cy - pad * 0.35, x2: cx, y2: cy + pad * 0.2, strokeWidth: strokeWidth * 0.85 },
+                        { kind: 'circle', cx, cy: cy + pad * 0.58, r: Math.max(2, span * 0.07), fill: true },
+                    ],
+                };
+            case 'shield': {
+                const top = cy - pad * 0.95;
+                const bottom = cy + pad * 0.95;
+                const path = `M ${cx} ${top} L ${cx + pad * 0.95} ${top + pad * 0.45} L ${cx + pad * 0.75} ${bottom} L ${cx} ${bottom - pad * 0.15} L ${cx - pad * 0.75} ${bottom} L ${cx - pad * 0.95} ${top + pad * 0.45} Z`;
+                return { kind: 'path', path, strokeWidth: strokeWidth * 0.85 };
+            }
+            case 'minus':
+                return {
+                    kind: 'line',
+                    x1: cx - pad * 0.85,
+                    y1: cy,
+                    x2: cx + pad * 0.85,
+                    y2: cy,
+                    strokeWidth,
+                };
+            default:
+                return null;
+        }
+    },
+
+    buildSignParts(cfg, w, h, s, stroke, partOpts) {
+        const sign = this.resolveSign(cfg);
+        if (sign === 'none') return [];
+
+        const geom = this.signGeometry(w, h, sign);
+        if (!geom) return [];
+
+        const offsetX = (cfg.signOffset?.x || cfg.checkmarkOffset?.x || 0) * s;
+        const offsetY = (cfg.signOffset?.y || cfg.checkmarkOffset?.y || 0) * s;
+        const parts = [];
+
+        const addPath = (path, strokeWidth, fill = false) => {
+            const signPath = new fabric.Path(path, {
+                fill: fill ? stroke : 'transparent',
+                stroke,
+                strokeWidth: Math.max(2, strokeWidth),
+                strokeLineCap: 'round',
+                strokeLineJoin: 'round',
+                strokeUniform: true,
+                _partType: 'sign',
+                ...partOpts,
+            });
+            signPath.set({
+                left: signPath.left + offsetX,
+                top: signPath.top + offsetY,
+            });
+            parts.push(signPath);
+        };
+
+        if (geom.kind === 'path') {
+            addPath(geom.path, geom.strokeWidth, !!geom.fill);
+        } else if (geom.kind === 'line') {
+            parts.push(new fabric.Line([geom.x1 + offsetX, geom.y1 + offsetY, geom.x2 + offsetX, geom.y2 + offsetY], {
+                stroke,
+                strokeWidth: Math.max(2, geom.strokeWidth),
+                strokeLineCap: 'round',
+                strokeUniform: true,
+                _partType: 'sign',
+                ...partOpts,
+            }));
+        } else if (geom.kind === 'parts') {
+            geom.parts.forEach((item) => {
+                if (item.kind === 'line') {
+                    parts.push(new fabric.Line(
+                        [item.x1 + offsetX, item.y1 + offsetY, item.x2 + offsetX, item.y2 + offsetY],
+                        {
+                            stroke,
+                            strokeWidth: Math.max(2, item.strokeWidth),
+                            strokeLineCap: 'round',
+                            strokeUniform: true,
+                            _partType: 'sign',
+                            ...partOpts,
+                        },
+                    ));
+                } else if (item.kind === 'circle') {
+                    parts.push(new fabric.Circle({
+                        left: item.cx + offsetX,
+                        top: item.cy + offsetY,
+                        radius: item.r,
+                        originX: 'center',
+                        originY: 'center',
+                        fill: item.fill ? stroke : 'transparent',
+                        stroke: item.fill ? stroke : stroke,
+                        strokeWidth: item.fill ? 0 : Math.max(1.5, item.strokeWidth || 2),
+                        strokeUniform: true,
+                        _partType: 'sign',
+                        ...partOpts,
+                    }));
+                }
+            });
+        }
+
+        return parts;
     },
 
     capCharSpacing(cfg, fontSize, w, s) {
@@ -408,7 +621,7 @@ const StampKit = {
         const baseFontSize = (cfg.fontSize || 16) * s;
         const charSpacing = this.capCharSpacing(cfg, baseFontSize, w, s);
 
-        if (cfg.checkmark) {
+        if (this.hasSign(cfg)) {
             const textLeft = w * 0.42;
             const textWidth = w * 0.54;
             return {
@@ -531,26 +744,7 @@ const StampKit = {
             }));
         }
 
-        if (cfg.checkmark) {
-            const { path, strokeWidth: checkStroke } = this.checkmarkGeometry(w, h);
-            const checkPath = new fabric.Path(path, {
-                fill: 'transparent',
-                stroke,
-                strokeWidth: Math.max(2, checkStroke),
-                strokeLineCap: 'round',
-                strokeLineJoin: 'round',
-                strokeUniform: true,
-                _partType: 'checkmark',
-                ...partOpts,
-            });
-            const cx = (cfg.checkmarkOffset?.x || 0) * s;
-            const cy = (cfg.checkmarkOffset?.y || 0) * s;
-            checkPath.set({
-                left: checkPath.left + cx,
-                top: checkPath.top + cy,
-            });
-            parts.push(checkPath);
-        }
+        parts.push(...this.buildSignParts(cfg, w, h, s, stroke, partOpts));
 
         const textLayout = this.computeTextLayout(cfg, w, h, s, shape);
         const fontSize = Math.max(textLayout.fontSize, 8);
@@ -561,7 +755,7 @@ const StampKit = {
             top: textLayout.top + ty,
             fontSize,
             fill: cfg.textColor || stroke,
-            fontFamily: 'Helvetica, Arial, sans-serif',
+            fontFamily: this.resolveFontFamily(cfg),
             fontWeight: cfg.fontWeight || 'bold',
             originX: 'center',
             originY: 'center',
@@ -606,7 +800,13 @@ const StampKit = {
         btn.style.background = this.fillCss(config);
         if (config.dashed) btn.style.borderStyle = 'dashed';
 
-        if (config.checkmark) {
+        const sign = this.resolveSign(config);
+        if (sign !== 'none') {
+            const signEl = document.createElement('span');
+            signEl.className = 'stamp-preset-btn-sign';
+            signEl.textContent = STAMP_SIGN_OPTIONS.find((item) => item.id === sign)?.preview || '•';
+            btn.appendChild(signEl);
+        } else if (config.checkmark) {
             const check = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
             check.setAttribute('class', 'stamp-preset-btn-checkmark');
             check.setAttribute('viewBox', '0 0 24 24');
@@ -709,8 +909,8 @@ const StampKit = {
             });
             part.setPositionByOrigin(new fabric.Point(rotCenter.x + dx, rotCenter.y + dy), 'center', 'center');
 
-            const isInteractiveItem = needsInteractive && 
-                (part._partType === 'text' || part._partType === 'checkmark');
+            const isInteractiveItem = needsInteractive &&
+                (part._partType === 'text' || part._partType === 'sign' || part._partType === 'checkmark');
 
             if (isInteractiveItem) {
                 part.set({
@@ -744,7 +944,7 @@ const StampKit = {
                 const newOrigCenter = fabric.util.rotatePoint(newRotCenter, stampCenter, fabric.util.degreesToRadians(-angle));
 
                 // Use clean config with no offsets to find the unshifted position
-                const cleanConfig = { ...config, textOffset: null, checkmarkOffset: null };
+                const cleanConfig = { ...config, textOffset: null, signOffset: null, checkmarkOffset: null };
 
                 if (obj._partType === 'text') {
                     const textLayout = this.computeTextLayout(cleanConfig, width, height, pdfScale, config.shape);
@@ -754,16 +954,22 @@ const StampKit = {
                         x: (newOrigCenter.x - defaultX) / pdfScale,
                         y: (newOrigCenter.y - defaultY) / pdfScale,
                     };
-                } else if (obj._partType === 'checkmark') {
-                    const geom = this.checkmarkGeometry(width, height);
-                    const tempPath = new fabric.Path(geom.path);
-                    const tempCenter = tempPath.getCenterPoint();
-                    const defaultX = tempCenter.x;
-                    const defaultY = tempCenter.y;
-                    config.checkmarkOffset = {
+                } else if (obj._partType === 'sign' || obj._partType === 'checkmark') {
+                    const signType = this.resolveSign(cleanConfig);
+                    const geom = this.signGeometry(width, height, signType);
+                    let defaultX = width * 0.215;
+                    let defaultY = height / 2;
+                    if (geom?.kind === 'path') {
+                        const tempPath = new fabric.Path(geom.path);
+                        const tempCenter = tempPath.getCenterPoint();
+                        defaultX = tempCenter.x;
+                        defaultY = tempCenter.y;
+                    }
+                    config.signOffset = {
                         x: (newOrigCenter.x - defaultX) / pdfScale,
                         y: (newOrigCenter.y - defaultY) / pdfScale,
                     };
+                    config.checkmarkOffset = { ...config.signOffset };
                 }
 
                 if (options.onOffsetChange) {

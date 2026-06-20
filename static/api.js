@@ -565,6 +565,42 @@ const API = {
         }
         return data;
     },
+
+    async certSign(sessionId, options) {
+        const formData = new FormData();
+        formData.append('certificate', options.certificateFile);
+        formData.append('password', options.password || '');
+        formData.append('page_num', String(options.pageNum ?? 0));
+        formData.append('pdf_bbox', JSON.stringify(options.pdf_bbox));
+        if (options.bbox) formData.append('bbox', JSON.stringify(options.bbox));
+        if (options.reason) formData.append('reason', options.reason);
+        if (options.location) formData.append('location', options.location);
+        if (options.contact_info) formData.append('contact_info', options.contact_info);
+        if (options.appearance_text) formData.append('appearance_text', options.appearance_text);
+
+        const resp = await fetch(`${this.baseUrl}/session/${sessionId}/cert-sign`, {
+            method: 'POST',
+            body: formData,
+        });
+        const data = await this._readJsonResponse(resp, 'Certificate signing failed');
+        if (!resp.ok) {
+            throw new Error(apiErrorMessage(data, 'Certificate signing failed'));
+        }
+        return data;
+    },
+
+    async generateCertificate(body) {
+        const resp = await fetch(`${this.baseUrl}/cert/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await this._readJsonResponse(resp, 'Certificate generation failed');
+        if (!resp.ok) {
+            throw new Error(apiErrorMessage(data, 'Certificate generation failed'));
+        }
+        return data;
+    },
 };
 
 window.API = API;
