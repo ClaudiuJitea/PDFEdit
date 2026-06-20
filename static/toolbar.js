@@ -1363,8 +1363,10 @@ class Toolbar {
         panel.style.display = 'block';
         const placeHint = document.getElementById('stamp-place-hint');
         const editHint = document.getElementById('stamp-edit-hint');
+        const saveBtn = document.getElementById('btn-save-stamp-to-library');
         if (placeHint) placeHint.style.display = mode === 'place' ? 'block' : 'none';
         if (editHint) editHint.style.display = mode === 'edit' ? 'block' : 'none';
+        if (saveBtn) saveBtn.style.display = mode === 'edit' ? 'inline-flex' : 'none';
     }
 
     showTableProperties(mode = 'place') {
@@ -1511,7 +1513,9 @@ class Toolbar {
     syncStampConfigForPlacement(config) {
         if (!config) return;
         this._syncingStampProps = true;
-        const presetKey = config.preset && StampKit?.listPresets().includes(config.preset) ? config.preset : '';
+        const presetKey = config.preset && StampKit?.listPresets().includes(config.preset)
+            ? config.preset
+            : '';
         const hidden = document.getElementById('prop-stamp-type');
         if (hidden) hidden.value = presetKey || 'approved';
         this._syncStampPresetButtons(presetKey || 'approved');

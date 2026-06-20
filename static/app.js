@@ -423,6 +423,9 @@ class App {
         this._initStampPresetGrid();
         this._bindStampPresetButtons();
         this._bindStampDesignControls();
+        document.getElementById('btn-save-stamp-to-library')?.addEventListener('click', () => {
+            this._saveActiveStampToLibrary();
+        });
         if (this.els.propLinkKind) {
             this.els.propLinkKind.addEventListener('change', () => {
                 this._updateLinkPropVisibility();
@@ -1003,46 +1006,57 @@ class App {
     }
 
     _initStampPresetGrid() {
+        this.refreshStampPresetGrid(this.els.propStampType?.value || 'approved');
+    }
+
+    refreshStampPresetGrid(activeKey = null) {
         const grid = document.getElementById('stamp-preset-grid');
         if (!grid || !window.StampKit) return;
+
+        const selected = activeKey
+            || this.els.propStampType?.value
+            || this.editor?.stampConfig?.preset
+            || 'approved';
 
         grid.innerHTML = '';
         StampKit.listPresets().forEach((key) => {
             const cfg = StampKit.getPreset(key);
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = `stamp-preset-btn stamp-preset-${key}`;
-            btn.dataset.stampType = key;
-            btn.title = cfg.text;
-            btn.style.color = cfg.textColor;
-            btn.style.borderColor = cfg.stroke;
-            btn.style.background = StampKit.fillCss(cfg);
-            if (cfg.dashed) btn.style.borderStyle = 'dashed';
-
-            if (cfg.checkmark) {
-                const check = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-                check.setAttribute('class', 'stamp-preset-btn-checkmark');
-                check.setAttribute('viewBox', '0 0 24 24');
-                check.setAttribute('fill', 'none');
-                check.setAttribute('stroke', 'currentColor');
-                check.setAttribute('stroke-width', '3.5');
-                check.setAttribute('stroke-linecap', 'round');
-                check.setAttribute('stroke-linejoin', 'round');
-                
-                const poly = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-                poly.setAttribute('d', 'M5.5 12.5 L9.5 16.5 L18 7');
-                check.appendChild(poly);
-                
-                btn.appendChild(check);
-            }
-
-            const label = document.createElement('span');
-            label.className = 'stamp-preset-label';
-            const short = cfg.text.length > 16 ? `${cfg.text.slice(0, 14)}…` : cfg.text;
-            label.textContent = short;
-            btn.appendChild(label);
+            const btn = StampKit.createPresetButton(key, cfg, { active: key === selected });
             grid.appendChild(btn);
         });
+
+        this._bindStampPresetButtons();
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+    }
+
+    selectStampPreset(key) {
+        if (!key || !StampKit.listPresets().includes(key)) return;
+        if (this.toolbar.onPropertyChange) {
+            this.toolbar.onPropertyChange('stamp', 'stampType', key);
+        }
+        if (this.toolbar.activeTool !== 'stamp') {
+            this._onToolChange('stamp');
+        }
+    }
+
+    _saveActiveStampToLibrary() {
+        const obj = this.editor.getActiveObject();
+        if (!obj || obj._elementType !== 'stamp') return;
+
+        let cfg = this.editor.getStampConfigFromGroup(obj);
+        const textEl = document.getElementById('prop-stamp-text');
+        const accentEl = document.getElementById('prop-stamp-accent');
+        if (textEl) cfg.text = textEl.value;
+        if (accentEl) cfg = StampKit.applyAccentColor(cfg, accentEl.value);
+
+        const s = this.editor.pdfScale || 1;
+        cfg.width = Math.round((obj.width || 1) * (obj.scaleX || 1) / s);
+        cfg.height = Math.round((obj.height || 1) * (obj.scaleY || 1) / s);
+
+        const existingId = cfg.preset && StampKit.isCustom(cfg.preset) ? cfg.preset : null;
+        const id = StampKit.saveCustomStamp(cfg, existingId);
+        this.refreshStampPresetGrid(id);
+        this._showToast(existingId ? 'Stamp updated in library' : 'Stamp saved to library', 'success');
     }
 
     _bindStampPresetButtons() {
@@ -2580,6 +2594,7 @@ class App {
             const preset = StampKit.getPreset(value);
             if (this.els.propStampType) this.els.propStampType.value = value;
             this.toolbar._syncStampPresetButtons(value);
+            this.refreshStampPresetGrid(value);
 
             if (active?._elementType === 'stamp') {
                 const cfg = this.getStampConfigFromPanelForRebuild(active, preset);

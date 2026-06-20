@@ -1070,7 +1070,13 @@
                     <h3 class="props-title">Stamp</h3>
                     <input type="hidden" id="prop-stamp-type" value="approved">
                     <div class="prop-group stamp-presets-group">
-                        <label class="prop-label">Presets</label>
+                        <div class="stamp-presets-header">
+                            <label class="prop-label">Presets</label>
+                            <button type="button" id="btn-manage-stamps" class="secondary-btn btn-sm stamp-manage-btn" title="Create, edit, and remove stamps">
+                                <i data-lucide="settings-2" class="btn-icon-sm"></i>
+                                Manage
+                            </button>
+                        </div>
                         <div id="stamp-preset-grid" class="stamp-preset-grid" role="radiogroup" aria-label="Stamp presets"></div>
                     </div>
                     <div class="prop-group">
@@ -1089,6 +1095,10 @@
                     </div>
                     <p id="stamp-edit-hint" class="stamp-hint" style="display:none">Drag handles on the canvas to resize or rotate.</p>
                     <p id="stamp-place-hint" class="stamp-hint">Click on the page to place your stamp.</p>
+                    <button type="button" id="btn-save-stamp-to-library" class="secondary-btn btn-sm stamp-save-library-btn" style="display:none" title="Save this stamp design to your library">
+                        <i data-lucide="bookmark-plus" class="btn-icon-sm"></i>
+                        Save to library
+                    </button>
                 </div>
 
                 <div id="props-link" class="props-section" style="display:none">
@@ -1431,6 +1441,113 @@
             </div>
         </div>
 
+        <!-- Stamp Manager Modal -->
+        <div id="stamp-manager-modal" class="modal modal-stamp-manager" style="display:none">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content modal-content-wide">
+                <h2 id="stamp-manager-title" class="modal-title">Manage stamps</h2>
+
+                <div id="stamp-manager-list-view" class="stamp-manager-list-view">
+                    <div class="stamp-manager-toolbar">
+                        <button type="button" id="btn-stamp-manager-create" class="modal-btn confirm">
+                            <i data-lucide="plus" class="btn-icon-sm"></i>
+                            Create stamp
+                        </button>
+                    </div>
+                    <section class="stamp-manager-section">
+                        <h3 class="stamp-manager-section-title">Your stamps</h3>
+                        <div id="stamp-manager-custom-list" class="stamp-manager-list"></div>
+                    </section>
+                    <section class="stamp-manager-section">
+                        <h3 class="stamp-manager-section-title">Built-in presets</h3>
+                        <div id="stamp-manager-builtin-list" class="stamp-manager-list"></div>
+                    </section>
+                    <div class="modal-actions">
+                        <button type="button" id="btn-stamp-manager-close" class="modal-btn cancel">Close</button>
+                    </div>
+                </div>
+
+                <div id="stamp-manager-editor-view" class="stamp-manager-editor-view" style="display:none">
+                    <div class="stamp-editor-layout">
+                        <div class="stamp-editor-form">
+                            <div class="prop-group">
+                                <label class="prop-label" for="stamp-editor-text">Label</label>
+                                <input type="text" id="stamp-editor-text" class="prop-input stamp-label-input" maxlength="48" placeholder="STAMP" autocomplete="off" spellcheck="false">
+                            </div>
+                            <div class="prop-group">
+                                <label class="prop-label" for="stamp-editor-shape">Shape</label>
+                                <select id="stamp-editor-shape" class="prop-select">
+                                    <option value="rounded">Rounded rectangle</option>
+                                    <option value="rect">Rectangle</option>
+                                    <option value="ellipse">Ellipse</option>
+                                    <option value="double">Double border</option>
+                                    <option value="cross">Cross / void</option>
+                                </select>
+                            </div>
+                            <div class="stamp-editor-color-row">
+                                <div class="prop-group">
+                                    <label class="prop-label" for="stamp-editor-accent">Ink color</label>
+                                    <input type="color" id="stamp-editor-accent" class="stamp-editor-color-input" value="#15803d">
+                                </div>
+                                <div class="prop-group">
+                                    <label class="prop-label" for="stamp-editor-text-color">Text color</label>
+                                    <input type="color" id="stamp-editor-text-color" class="stamp-editor-color-input" value="#14532d">
+                                </div>
+                            </div>
+                            <div class="stamp-editor-sliders">
+                                <div class="prop-group">
+                                    <label class="prop-label" for="stamp-editor-fill-opacity">Fill opacity</label>
+                                    <input type="range" id="stamp-editor-fill-opacity" min="0" max="0.5" step="0.01" value="0.12">
+                                </div>
+                                <div class="prop-group">
+                                    <label class="prop-label" for="stamp-editor-stroke-width">Border width</label>
+                                    <input type="number" id="stamp-editor-stroke-width" class="prop-input" min="1" max="8" step="0.5" value="2">
+                                </div>
+                                <div class="prop-group">
+                                    <label class="prop-label" for="stamp-editor-font-size">Font size</label>
+                                    <input type="number" id="stamp-editor-font-size" class="prop-input" min="8" max="36" step="1" value="16">
+                                </div>
+                                <div class="prop-group">
+                                    <label class="prop-label" for="stamp-editor-char-spacing">Letter spacing</label>
+                                    <input type="number" id="stamp-editor-char-spacing" class="prop-input" min="0" max="300" step="10" value="70">
+                                </div>
+                                <div class="prop-group">
+                                    <label class="prop-label" for="stamp-editor-rotation">Default rotation (°)</label>
+                                    <input type="number" id="stamp-editor-rotation" class="prop-input" min="-45" max="45" step="1" value="0">
+                                </div>
+                                <div class="prop-group">
+                                    <label class="prop-label" for="stamp-editor-width">Width (px)</label>
+                                    <input type="number" id="stamp-editor-width" class="prop-input" min="60" max="400" step="4" value="168">
+                                </div>
+                                <div class="prop-group">
+                                    <label class="prop-label" for="stamp-editor-height">Height (px)</label>
+                                    <input type="number" id="stamp-editor-height" class="prop-input" min="40" max="200" step="4" value="52">
+                                </div>
+                            </div>
+                            <div class="stamp-editor-toggles">
+                                <label class="prop-checkbox"><input type="checkbox" id="stamp-editor-dashed"> Dashed border</label>
+                                <label class="prop-checkbox"><input type="checkbox" id="stamp-editor-double-border"> Inner border</label>
+                                <label class="prop-checkbox"><input type="checkbox" id="stamp-editor-cross"> Cross overlay</label>
+                                <label class="prop-checkbox"><input type="checkbox" id="stamp-editor-checkmark"> Checkmark</label>
+                                <label class="prop-checkbox"><input type="checkbox" id="stamp-editor-strike"> Strikethrough text</label>
+                            </div>
+                        </div>
+                        <div class="stamp-editor-preview-panel">
+                            <label class="prop-label">Preview</label>
+                            <div class="stamp-editor-preview-wrap">
+                                <canvas id="stamp-editor-preview"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-actions">
+                        <button type="button" id="btn-stamp-editor-delete" class="modal-btn discard">Delete</button>
+                        <button type="button" id="btn-stamp-editor-cancel" class="modal-btn cancel">Back</button>
+                        <button type="button" id="btn-stamp-editor-save" class="modal-btn confirm">Save to library</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Signature Dialog Modal -->
         <div id="signature-modal" class="modal" style="display:none">
             <div class="modal-backdrop"></div>
@@ -1729,7 +1846,8 @@
     })();
     </script>
     <script src="{{ url_for('static', filename='api.js') }}?v=1.0.11"></script>
-    <script src="{{ url_for('static', filename='stamps.js') }}?v=2.0.2"></script>
+    <script src="{{ url_for('static', filename='stamps.js') }}?v=2.1.0"></script>
+    <script src="{{ url_for('static', filename='stamp-manager.js') }}?v=1.0.0"></script>
     <script src="{{ url_for('static', filename='editor.js') }}?v=1.0.22"></script>
     <script src="{{ url_for('static', filename='forms.js') }}?v=1.0.5"></script>
     <script src="{{ url_for('static', filename='toolbar.js') }}?v=1.0.10"></script>
