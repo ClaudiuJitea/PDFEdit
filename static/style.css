@@ -977,7 +977,28 @@ select {
     color: #a09850;
 }
 
-.form-layer:not(.interactive) {
+.form-layer:not(.interactive):not(.movable) {
+    pointer-events: none;
+}
+
+.form-layer.movable {
+    pointer-events: none;
+}
+
+.form-layer.movable .form-layer-field {
+    pointer-events: none;
+}
+
+.form-layer.movable .form-layer-field.selected {
+    pointer-events: auto;
+    cursor: grab;
+}
+
+.form-layer.movable .form-layer-field.selected:active {
+    cursor: grabbing;
+}
+
+.form-layer.movable .form-layer-control {
     pointer-events: none;
 }
 
@@ -1065,7 +1086,7 @@ select {
 
 .form-layer-handle-move {
     top: -28px;
-    left: calc(50% - 39px);
+    left: calc(50% - 54px);
     min-width: 52px;
     height: 24px;
     padding: 0 10px;
@@ -1101,7 +1122,7 @@ select {
 
 .form-layer-handle-delete {
     top: -27px;
-    right: calc(50% - 39px);
+    left: calc(50% + 32px);
     width: 22px;
     height: 22px;
     border-radius: 999px;
@@ -1123,7 +1144,37 @@ select {
     flex-shrink: 0;
 }
 
-.form-delete-btn {
+.form-layer-handle-duplicate {
+    top: -27px;
+    left: calc(50% + 4px);
+    width: 22px;
+    height: 22px;
+    border-radius: 999px;
+    cursor: pointer;
+    background: color-mix(in srgb, var(--color-primary) 10%, white);
+    border-color: color-mix(in srgb, var(--color-primary) 35%, var(--color-border));
+    color: var(--color-primary);
+}
+
+.form-layer-handle-duplicate:hover {
+    background: var(--color-primary);
+    color: white;
+    border-color: var(--color-primary);
+}
+
+.form-layer-handle-duplicate svg {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+}
+
+.form-field-actions {
+    display: grid;
+    gap: 8px;
+}
+
+.form-delete-btn,
+.form-duplicate-btn {
     width: 100%;
 }
 

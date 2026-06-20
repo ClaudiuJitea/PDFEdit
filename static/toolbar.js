@@ -7,9 +7,11 @@ class Toolbar {
         this.onFormFieldSelect = null;
         this.onFormCreate = null;
         this.onFormDelete = null;
+        this.onFormDuplicate = null;
         this.onFormMatchSizes = null;
         this.onFormPropertiesChange = null;
         this.onTableAction = null;
+        this._suppressFormPanelEvents = false;
         this._boundElements = false;
     }
 
@@ -560,12 +562,14 @@ class Toolbar {
 
         if (textInput) {
             textInput.addEventListener('input', () => {
+                if (this._suppressFormPanelEvents) return;
                 if (this.onFormValueChange) this.onFormValueChange(textInput.value);
             });
         }
 
         if (choiceInput) {
             choiceInput.addEventListener('change', () => {
+                if (this._suppressFormPanelEvents) return;
                 if (!this.onFormValueChange) return;
                 const value = choiceInput.multiple
                     ? Array.from(choiceInput.selectedOptions).map((option) => option.value)
@@ -576,6 +580,7 @@ class Toolbar {
 
         if (boolInput) {
             boolInput.addEventListener('change', () => {
+                if (this._suppressFormPanelEvents) return;
                 if (this.onFormValueChange) this.onFormValueChange(boolInput.checked);
             });
         }
@@ -583,6 +588,7 @@ class Toolbar {
         const nameInput = document.getElementById('prop-form-name');
         if (nameInput) {
             nameInput.addEventListener('input', () => {
+                if (this._suppressFormPanelEvents) return;
                 if (this.onFormPropertiesChange) {
                     this.onFormPropertiesChange({ field_name: nameInput.value });
                 }
@@ -592,6 +598,7 @@ class Toolbar {
         const labelInput = document.getElementById('prop-form-label');
         if (labelInput) {
             labelInput.addEventListener('input', () => {
+                if (this._suppressFormPanelEvents) return;
                 if (this.onFormPropertiesChange) {
                     this.onFormPropertiesChange({ field_label: labelInput.value });
                 }
@@ -601,6 +608,7 @@ class Toolbar {
         const choicesEditInput = document.getElementById('prop-form-choices-edit');
         if (choicesEditInput) {
             choicesEditInput.addEventListener('input', () => {
+                if (this._suppressFormPanelEvents) return;
                 if (this.onFormPropertiesChange) {
                     this.onFormPropertiesChange({
                         choice_values: this._parseChoiceEditorValue(choicesEditInput.value),
@@ -632,6 +640,13 @@ class Toolbar {
         if (deleteButton) {
             deleteButton.addEventListener('click', () => {
                 if (this.onFormDelete) this.onFormDelete();
+            });
+        }
+
+        const duplicateButton = document.getElementById('btn-duplicate-form');
+        if (duplicateButton) {
+            duplicateButton.addEventListener('click', () => {
+                if (this.onFormDuplicate) this.onFormDuplicate();
             });
         }
 
@@ -1169,6 +1184,15 @@ class Toolbar {
     showFormProperties(forms, selectedFields = null) {
         this._hideAllProps();
 
+        this._suppressFormPanelEvents = true;
+        try {
+            this._renderFormProperties(forms, selectedFields);
+        } finally {
+            this._suppressFormPanelEvents = false;
+        }
+    }
+
+    _renderFormProperties(forms, selectedFields = null) {
         const panel = document.getElementById('props-form');
         const count = document.getElementById('prop-form-count');
         const selected = document.getElementById('prop-form-selected');

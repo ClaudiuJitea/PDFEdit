@@ -1472,6 +1472,119 @@ def create_form_widget(page, widget_kind):
     return refresh_page_handle(page.parent, page, page.number)
 
 
+def duplicate_widget_rect(page, source_rect):
+    rect = fitz.Rect(source_rect)
+    offset_y = min(max(rect.height + 8, 20), 44)
+    offset_x = min(max(rect.width * 0.08, 12), 24)
+    page_rect = page.rect
+    margin = 36
+
+    def _shifted(dx, dy):
+        next_rect = fitz.Rect(rect)
+        next_rect.x0 += dx
+        next_rect.y0 += dy
+        next_rect.x1 += dx
+        next_rect.y1 += dy
+        return next_rect
+
+    candidates = [
+        _shifted(offset_x, offset_y),
+        _shifted(0, offset_y),
+        _shifted(offset_x, 0),
+        _shifted(-offset_x, offset_y),
+        _shifted(offset_x, -offset_y),
+    ]
+
+    for candidate in candidates:
+        if (
+            candidate.x0 >= margin
+            and candidate.y0 >= margin
+            and candidate.x1 <= page_rect.width - margin
+            and candidate.y1 <= page_rect.height - margin
+        ):
+            return candidate
+
+    clamped = _shifted(offset_x, offset_y)
+    clamped.x0 = max(margin, min(clamped.x0, page_rect.width - margin - rect.width))
+    clamped.y0 = max(margin, min(clamped.y0, page_rect.height - margin - rect.height))
+    clamped.x1 = clamped.x0 + rect.width
+    clamped.y1 = clamped.y0 + rect.height
+    return clamped
+
+
+def duplicate_form_widget(page, source_xref, source_snapshot=None):
+    source = page.load_widget(source_xref)
+    if not source:
+        raise ValueError("Form field not found")
+
+    snapshot = source_snapshot if isinstance(source_snapshot, dict) else {}
+
+    existing_widgets = list(page.widgets() or [])
+    widget_index = len(existing_widgets) + 1
+    field_type = int(snapshot.get("field_type") or source.field_type or 0)
+    widget_kind = snapshot.get("widget_kind") or WIDGET_KIND_MAP.get(field_type, "text")
+
+    fallback_bbox = rect_to_list(source.rect)
+    source_pdf_bbox = resolve_widget_pdf_bbox(page, snapshot, fallback_bbox)
+    source_rect = fitz.Rect(source_pdf_bbox) if source_pdf_bbox else fitz.Rect(source.rect)
+
+    widget = fitz.Widget()
+    widget.field_type = field_type
+
+    base_name = (snapshot.get("field_name") or source.field_name or f"{widget_kind}_field").strip()
+    widget.field_name = f"{base_name}_copy_{widget_index}"
+
+    source_label = (snapshot.get("field_label") or source.field_label or source.field_name or "").strip()
+    widget.field_label = f"{source_label} Copy" if source_label else f"Field {widget_index}"
+
+    widget.rect = duplicate_widget_rect(page, source_rect)
+    widget.border_color = normalize_pdf_color(getattr(source, "border_color", None), (0.24, 0.39, 0.45))
+    widget.fill_color = normalize_pdf_color(getattr(source, "fill_color", None), (1, 1, 1))
+    widget.text_color = normalize_pdf_color(getattr(source, "text_color", None), (0, 0, 0))
+    try:
+        widget.border_width = max(0.5, float(getattr(source, "border_width", 1) or 1))
+    except (TypeError, ValueError):
+        widget.border_width = 1.0
+
+    source_font = snapshot.get("text_font") or getattr(source, "text_font", None)
+    if source_font:
+        widget.text_font = source_font
+    try:
+        fontsize = snapshot.get("text_fontsize", getattr(source, "text_fontsize", 0))
+        widget.text_fontsize = float(fontsize or 0)
+    except (TypeError, ValueError):
+        widget.text_fontsize = 0
+
+    if field_type in (fitz.PDF_WIDGET_TYPE_COMBOBOX, fitz.PDF_WIDGET_TYPE_LISTBOX):
+        if isinstance(snapshot.get("choice_values"), list):
+            widget.choice_values = [
+                [opt["value"], opt["label"]]
+                for opt in normalize_widget_choice_values(snapshot["choice_values"])
+            ]
+        else:
+            widget.choice_values = getattr(source, "choice_values", None) or []
+        if field_type == fitz.PDF_WIDGET_TYPE_LISTBOX:
+            widget.field_flags = int(getattr(source, "field_flags", 0) or 0) | (1 << 21)
+            widget.field_value = []
+        else:
+            choice_options = normalize_widget_choice_values(widget.choice_values)
+            widget.field_value = choice_options[0]["value"] if choice_options else ""
+    elif field_type == fitz.PDF_WIDGET_TYPE_TEXT:
+        widget.field_value = ""
+    elif field_type in (fitz.PDF_WIDGET_TYPE_CHECKBOX, fitz.PDF_WIDGET_TYPE_RADIOBUTTON):
+        if widget_kind == "radio":
+            widget.text_font = "ZaDb"
+            widget.text_fontsize = 0
+        widget.field_value = False
+    else:
+        widget.field_value = getattr(source, "field_value", "")
+
+    page.add_widget(widget)
+    new_xref = int(widget.xref)
+    page = refresh_page_handle(page.parent, page, page.number)
+    return page, new_xref
+
+
 def extract_page_widgets(page, scale=RENDER_SCALE):
     widgets = []
 
@@ -2809,6 +2922,47 @@ def get_page_forms(session_id, page_num):
 
     forms = extract_page_widgets(page)
     return jsonify({"forms": forms})
+
+
+@app.route("/api/page/<session_id>/<int:page_num>/forms/<int:xref>/duplicate", methods=["POST"])
+def duplicate_page_form(session_id, page_num, xref):
+    entry = get_session(session_id)
+    if not entry:
+        return jsonify({"error": "Session not found"}), 404
+
+    doc = entry["doc"]
+    if page_num < 0 or page_num >= len(doc):
+        return jsonify({"error": "Page out of range"}), 400
+
+    page = doc[page_num]
+    body = request.get_json(silent=True) or {}
+    source_snapshot = body.get("field")
+    try:
+        if isinstance(source_snapshot, dict):
+            page = apply_form_updates(doc, page_num, [source_snapshot])
+        page, new_xref = duplicate_form_widget(page, xref, source_snapshot)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except Exception as exc:
+        print(f"Form duplicate error: {exc}", file=sys.stderr, flush=True)
+        return jsonify({"error": "Failed to duplicate form field"}), 500
+
+    try:
+        save_session_doc(session_id)
+    except Exception as exc:
+        print(f"Form duplicate save error: {exc}", file=sys.stderr, flush=True)
+        return jsonify({"error": "Failed to save after duplicating form field"}), 500
+
+    page = entry["doc"][page_num]
+    forms = extract_page_widgets(page)
+    duplicated_form = next((form for form in forms if form.get("xref") == new_xref), forms[-1] if forms else None)
+    thumbnail = render_page_thumbnail(page)
+    return jsonify({
+        "success": True,
+        "form": duplicated_form,
+        "forms": forms,
+        "thumbnail": f"data:image/png;base64,{thumbnail}",
+    })
 
 
 @app.route("/api/page/<session_id>/<int:page_num>/forms/<int:xref>", methods=["DELETE"])

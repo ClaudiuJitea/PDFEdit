@@ -59,6 +59,8 @@ class PDFEditor {
         this.canvasHeight = 0;
         this.onObjectSelected = null;
         this.onSelectionCleared = null;
+        this.onSelectCanvasPointerDown = null;
+        this.onSelectCanvasPointerUp = null;
         this.onCanvasModified = null;
         this.onDrawingComplete = null;
         this.onContextMenuRequested = null;
@@ -76,6 +78,7 @@ class PDFEditor {
             lineStyle: 'solid',
         };
         this._linkDrawMode = false;
+        this._selectPointerStart = null;
         this._objectIdSeq = 0;
         this._tableIdSeq = 0;
         this.pendingOcrText = null;
@@ -980,8 +983,14 @@ class PDFEditor {
 
         if (this.canvas.isDrawingMode) return;
         if (this.currentTool === 'select') {
+            const pointer = this.canvas.getPointer(opt.e);
+            this._selectPointerStart = {
+                x: pointer.x,
+                y: pointer.y,
+                target: opt.target || null,
+            };
+
             if (opt.button !== 3 && opt.e?.button !== 2) {
-                const pointer = this.canvas.getPointer(opt.e);
                 const hit = this._findTableCellAtPoint(pointer);
                 if (hit) {
                     this._clearActiveTableCells(hit.table);
@@ -998,6 +1007,10 @@ class PDFEditor {
                 } else {
                     this._clearActiveTableCells();
                 }
+            }
+            if (this.onSelectCanvasPointerDown?.(opt)) {
+                this._selectPointerStart = null;
+                return;
             }
             return;
         }
@@ -1118,6 +1131,24 @@ class PDFEditor {
     }
 
     _onMouseUp(opt) {
+        if (this.currentTool === 'select') {
+            const start = this._selectPointerStart;
+            this._selectPointerStart = null;
+            if (start && this.onSelectCanvasPointerUp) {
+                const pointer = this.canvas.getPointer(opt.e);
+                this.onSelectCanvasPointerUp({
+                    start,
+                    end: {
+                        x: pointer.x,
+                        y: pointer.y,
+                        target: opt.target || null,
+                    },
+                    event: opt.e,
+                });
+            }
+            return;
+        }
+
         if (!this.isDrawing) return;
         this.isDrawing = false;
 

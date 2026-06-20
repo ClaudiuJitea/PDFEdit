@@ -98,6 +98,7 @@ class App {
         });
         this.toolbar.onFormCreate = (kind) => this._createFormField(kind);
         this.toolbar.onFormDelete = () => this._deleteFormField(this.selectedFormXref);
+        this.toolbar.onFormDuplicate = () => this._duplicateFormField(this.selectedFormXref);
         this.toolbar.onFormMatchSizes = (dimension) => this._matchFormFieldSizes(dimension);
         this.toolbar.onFormPropertiesChange = (properties) => this._onFormPropertiesChange(properties);
         this.toolbar.onTableAction = (action) => this._onTableAction(action);
@@ -105,6 +106,7 @@ class App {
         this.formLayer.onFieldChanged = (field) => this._onFormFieldChanged(field);
         this.formLayer.onFieldsBatchChanged = (fields) => this._onFormFieldsBatchChanged(fields);
         this.formLayer._onFieldDelete = (xref) => this._deleteFormField(xref);
+        this.formLayer._onFieldDuplicate = (xref) => this._duplicateFormField(xref);
         this._attachEditorCallbacks();
         AISettings.bind();
         AIAssistant.init();
@@ -181,6 +183,8 @@ class App {
                 this._showContextProperties();
             }
         };
+        this.editor.onSelectCanvasPointerDown = (opt) => this._onSelectCanvasPointerDown(opt);
+        this.editor.onSelectCanvasPointerUp = (selection) => this._onSelectCanvasPointerUp(selection);
         this.editor.onCanvasModified = () => {
             this._recordUndoState();
             this._markDirty();
@@ -745,22 +749,24 @@ class App {
                 }
             }
 
-            if (this.toolbar.activeTool === 'forms') {
+            if (this.toolbar.activeTool === 'forms' || (
+                this.toolbar.activeTool === 'select' && this.formLayer.getSelectedFields().length > 0
+            )) {
                 const step = e.shiftKey ? 10 : 1;
                 let moved = false;
 
                 switch (e.key) {
                     case 'ArrowLeft':
-                        moved = this.formLayer.nudgeSelectedField(-step, 0);
+                        moved = this.formLayer.nudgeSelectedFields(-step, 0);
                         break;
                     case 'ArrowRight':
-                        moved = this.formLayer.nudgeSelectedField(step, 0);
+                        moved = this.formLayer.nudgeSelectedFields(step, 0);
                         break;
                     case 'ArrowUp':
-                        moved = this.formLayer.nudgeSelectedField(0, -step);
+                        moved = this.formLayer.nudgeSelectedFields(0, -step);
                         break;
                     case 'ArrowDown':
-                        moved = this.formLayer.nudgeSelectedField(0, step);
+                        moved = this.formLayer.nudgeSelectedFields(0, step);
                         break;
                 }
 
@@ -1631,8 +1637,7 @@ class App {
             this._showContextProperties();
 
             this.editor.setTool(this.toolbar.activeTool);
-            this.formLayer.setInteractive(this.toolbar.activeTool === 'forms');
-            this.formLayer.syncPosition();
+            this._syncFormLayerInteraction();
 
             this._storeThumbnailFromCanvas(pageNum);
 
@@ -2131,6 +2136,10 @@ class App {
     _onToolChange(tool) {
         this.documentMode = false;
 
+        if (tool !== 'forms' && tool !== 'select') {
+            this._clearFormSelection(false);
+        }
+
         if (this.toolbar.activeTool === 'link' && tool !== 'link') {
             this.editor.clearLinkOverlays();
             this._linkDrawAreaMode = false;
@@ -2141,6 +2150,7 @@ class App {
             this.editor.setTool('stamp');
             this.editor.setStampType(this.els.propStampType?.value || 'approved');
             this.formLayer.setInteractive(false);
+            this.formLayer.setMovable(false);
             this.toolbar.showStampProperties('place');
             const cfg = this.editor.stampConfig || StampKit.getPreset('approved');
             this.toolbar.syncStampConfigForPlacement(cfg);
@@ -2152,6 +2162,7 @@ class App {
             this.editor.setTool('link');
             this.editor.setLinkDrawMode(this._linkDrawAreaMode);
             this.formLayer.setInteractive(false);
+            this.formLayer.setMovable(false);
             this.toolbar.showLinkProperties();
             this._updateLinkPropVisibility();
             this._updateLinkSelectedTextButton();
@@ -2163,12 +2174,14 @@ class App {
             this.toolbar.setActiveTool('signature');
             this.editor.setTool('select');
             this.formLayer.setInteractive(false);
+            this.formLayer.setMovable(false);
             this._showContextProperties();
             return;
         }
 
         if (tool === 'image') {
             this.formLayer.setInteractive(false);
+            this.formLayer.setMovable(false);
             const cellTarget = this.editor.getTableCellTargetFromSelection?.();
             if (cellTarget) {
                 this.els.imageInput.click();
@@ -2185,14 +2198,9 @@ class App {
         if (tool === 'forms') {
             this.toolbar.setActiveTool('forms');
             this.editor.setTool('forms');
-            this.formLayer.setInteractive(true);
-            this.formLayer.syncPosition();
+            this._syncFormLayerInteraction();
             this._showFormProperties();
             return;
-        }
-
-        if (this.toolbar.activeTool === 'forms') {
-            this._clearFormSelection(false);
         }
 
         this.toolbar.setActiveTool(tool);
@@ -2201,7 +2209,7 @@ class App {
         } else {
             this.editor.setTool(tool);
         }
-        this.formLayer.setInteractive(false);
+        this._syncFormLayerInteraction();
         this._showContextProperties();
 
         // Sync shape tool dropdown active item if tool is rect, ellipse, line, or star
@@ -2232,6 +2240,124 @@ class App {
 
     _showFormProperties() {
         this.toolbar.showFormProperties(this.formLayer.getForms(), this.formLayer.getSelectedFields());
+    }
+
+    _syncFormLayerInteraction() {
+        const formsTool = this.toolbar.activeTool === 'forms';
+        const selectTool = this.toolbar.activeTool === 'select';
+
+        this.formLayer.setInteractive(formsTool);
+        this.formLayer.setMovable(selectTool && this.formLayer.getSelectedFields().length > 0);
+        this.formLayer._updateSelectionUI();
+        this.formLayer.syncPosition();
+    }
+
+    _hitTestFormFieldAtClientPoint(clientX, clientY) {
+        const forms = this.formLayer.getForms();
+        if (!forms.length || !this.els.formLayer) return null;
+
+        const layerRect = this.els.formLayer.getBoundingClientRect();
+        if (
+            clientX < layerRect.left
+            || clientX > layerRect.right
+            || clientY < layerRect.top
+            || clientY > layerRect.bottom
+        ) {
+            return null;
+        }
+
+        const zoom = this.formLayer.zoom || 1;
+        const x = (clientX - layerRect.left) / zoom;
+        const y = (clientY - layerRect.top) / zoom;
+
+        for (let index = forms.length - 1; index >= 0; index -= 1) {
+            const field = forms[index];
+            const bbox = field.bbox || [0, 0, 0, 0];
+            if (x >= bbox[0] && x <= bbox[2] && y >= bbox[1] && y <= bbox[3]) {
+                return field;
+            }
+        }
+
+        return null;
+    }
+
+    _rectsIntersect(a, b) {
+        return a.left < b.right
+            && a.right > b.left
+            && a.top < b.bottom
+            && a.bottom > b.top;
+    }
+
+    _getFormsInCanvasRect(rect) {
+        return this.formLayer.getForms().filter((field) => {
+            const bbox = field.bbox || [0, 0, 0, 0];
+            return this._rectsIntersect(rect, {
+                left: bbox[0],
+                top: bbox[1],
+                right: bbox[2],
+                bottom: bbox[3],
+            });
+        });
+    }
+
+    _onSelectCanvasPointerDown(opt) {
+        if (this.toolbar.activeTool !== 'select') return false;
+
+        const event = opt.e;
+        const formHit = this._hitTestFormFieldAtClientPoint(event.clientX, event.clientY);
+        const selectedForms = this.formLayer.getSelectedFields();
+
+        if (formHit) {
+            const alreadySelected = selectedForms.some((field) => field.xref === formHit.xref);
+            if (!alreadySelected) {
+                this._selectFormField(formHit.xref, {
+                    extend: event.ctrlKey || event.metaKey,
+                    range: event.shiftKey,
+                });
+                if (this.editor.canvas) {
+                    this.editor.canvas.discardActiveObject();
+                    this.editor.canvas.requestRenderAll();
+                }
+                return true;
+            }
+            return false;
+        }
+
+        if (selectedForms.length > 0) {
+            this._clearFormSelection(false);
+        }
+
+        return false;
+    }
+
+    _onSelectCanvasPointerUp(selection) {
+        if (this.toolbar.activeTool !== 'select' || !selection?.start || !selection?.end) return false;
+
+        const dx = selection.end.x - selection.start.x;
+        const dy = selection.end.y - selection.start.y;
+        if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return false;
+
+        const rect = {
+            left: Math.min(selection.start.x, selection.end.x),
+            top: Math.min(selection.start.y, selection.end.y),
+            right: Math.max(selection.start.x, selection.end.x),
+            bottom: Math.max(selection.start.y, selection.end.y),
+        };
+        const fields = this._getFormsInCanvasRect(rect);
+
+        if (!fields.length) {
+            if (this.formLayer.getSelectedFields().length > 0) {
+                this._clearFormSelection(false);
+            }
+            return false;
+        }
+
+        if (this.editor.canvas) {
+            this.editor.canvas.discardActiveObject();
+            this.editor.canvas.requestRenderAll();
+        }
+        this.formLayer.selectFields(fields.map((field) => field.xref));
+        return true;
     }
 
     _showContextProperties() {
@@ -2276,7 +2402,7 @@ class App {
             return;
         }
 
-        if (this.toolbar.activeTool === 'forms') {
+        if (this.toolbar.activeTool === 'forms' || this.formLayer.getSelectedFields().length > 0) {
             this._showFormProperties();
             return;
         }
@@ -2301,8 +2427,9 @@ class App {
     _clearFormSelection(refreshPanel = true) {
         this.selectedFormXref = null;
         this.formLayer.clearSelection();
-        if (refreshPanel && this.toolbar.activeTool === 'forms') {
-            this._showFormProperties();
+        this._syncFormLayerInteraction();
+        if (refreshPanel) {
+            this._showContextProperties();
         }
     }
 
@@ -2310,12 +2437,14 @@ class App {
         this.formLayer.selectField(xref, {
             focus: options.focus,
             extend: options.extend,
+            range: options.range,
         });
     }
 
     _onFormFieldSelected(field, selectedFields = null) {
         this.selectedFormXref = field?.xref ?? null;
         this._syncCurrentPageFormsState();
+        this._syncFormLayerInteraction();
         if (selectedFields) {
             this.toolbar.showFormProperties(this.formLayer.getForms(), selectedFields);
         } else {
@@ -2334,16 +2463,15 @@ class App {
         this._syncCurrentPageFormsState();
         this._showFormProperties();
         this._markDirty();
-        if (fields?.length) {
-            this._showToast(`Resized ${fields.length} field${fields.length === 1 ? '' : 's'} to match`, 'success');
-        }
     }
 
     _matchFormFieldSizes(dimension) {
         const updated = this.formLayer.matchSelectedFieldSizes(dimension);
         if (!updated.length) {
             this._showToast('Select two or more fields of the same type first', 'info');
+            return;
         }
+        this._showToast(`Resized ${updated.length} field${updated.length === 1 ? '' : 's'} to match`, 'success');
     }
 
     _onFormValueChange(value) {
@@ -2367,8 +2495,7 @@ class App {
             this.pageFormStates[this.currentPage] = forms;
             this.formLayer.setForms(forms, this.editor.canvasWidth, this.editor.canvasHeight);
             this.formLayer.setZoom(this.editor.zoomLevel);
-            this.formLayer.setInteractive(this.toolbar.activeTool === 'forms');
-            this.formLayer.syncPosition();
+            this._syncFormLayerInteraction();
 
             if (result.thumbnail) {
                 this.thumbnails[this.currentPage] = result.thumbnail;
@@ -2398,8 +2525,7 @@ class App {
             this.pageFormStates[this.currentPage] = forms;
             this.formLayer.setForms(forms, this.editor.canvasWidth, this.editor.canvasHeight);
             this.formLayer.setZoom(this.editor.zoomLevel);
-            this.formLayer.setInteractive(this.toolbar.activeTool === 'forms');
-            this.formLayer.syncPosition();
+            this._syncFormLayerInteraction();
 
             if (result.thumbnail) {
                 this.thumbnails[this.currentPage] = result.thumbnail;
@@ -2408,6 +2534,36 @@ class App {
 
             this._showFormProperties();
             this._showToast('Form field deleted', 'success');
+        } catch (err) {
+            this._showToast(err.message, 'error');
+        }
+    }
+
+    async _duplicateFormField(xref) {
+        if (!this.sessionId || this.isLoading || this.isSaving || !xref) return;
+
+        const sourceField = this.formLayer.getForms().find((field) => field.xref === xref) || null;
+
+        try {
+            const result = await API.duplicatePageForm(this.sessionId, this.currentPage, xref, sourceField);
+            const forms = result.forms || [];
+            this.pageFormStates[this.currentPage] = forms;
+            this.formLayer.setForms(forms, this.editor.canvasWidth, this.editor.canvasHeight);
+            this.formLayer.setZoom(this.editor.zoomLevel);
+            this._syncFormLayerInteraction();
+
+            if (result.thumbnail) {
+                this.thumbnails[this.currentPage] = result.thumbnail;
+                this._updateThumbnail(this.currentPage);
+            }
+
+            if (result.form?.xref) {
+                this._selectFormField(result.form.xref, { focus: this.toolbar.activeTool === 'forms' });
+            } else {
+                this._showFormProperties();
+            }
+
+            this._showToast('Form field duplicated', 'success');
         } catch (err) {
             this._showToast(err.message, 'error');
         }
@@ -2782,7 +2938,7 @@ class App {
     }
 
     _updateStickyPopupColor(color) {
-        const darkColor = this._darkenStickyColor(color);
+        const darkColor = this.editor._darkenStickyColor(color);
         this.els.stickyPopup.querySelector('.sticky-popup-header').style.background = darkColor;
         this.els.stickyPopup.querySelector('.sticky-popup-body').style.background = color;
     }

@@ -138,6 +138,19 @@ const API = {
         return resp.json();
     },
 
+    async duplicatePageForm(sessionId, pageNum, xref, field = null) {
+        const resp = await fetch(`${this.baseUrl}/page/${sessionId}/${pageNum}/forms/${xref}/duplicate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(field ? { field } : {}),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'Failed to duplicate form field' }));
+            throw new Error(err.error || 'Failed to duplicate form field');
+        }
+        return resp.json();
+    },
+
     async savePage(sessionId, pageNum, elements, deletedOriginals = [], forms = []) {
         const resp = await fetch(`${this.baseUrl}/page/${sessionId}/${pageNum}/save`, {
             method: 'POST',
